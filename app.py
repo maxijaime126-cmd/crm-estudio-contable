@@ -25,6 +25,11 @@ COLORES_TAREAS = {
 OPERARIOS_FIJOS = ["Natalia", "Maximiliano", "Athina", "Johana"]
 HORAS_DIA_LABORAL = 6
 
+MESES_ES = {
+    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+    7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
+}
+
 # ===== CONEXIÓN GOOGLE SHEETS =====
 @st.cache_resource
 def conectar_sheets():
@@ -131,11 +136,11 @@ if menu == "Panel de Control":
         anio = st.selectbox("Año", [2025, 2026, 2027], index=1)
     with col2:
         mes = st.selectbox("Mes", list(range(1,13)),
-                           format_func=lambda x: datetime(1900, x, 1).strftime('%B'),
+                           format_func=lambda x: MESES_ES[x],
                            index=3)
 
     dias_habiles, capacidad_base = calcular_capacidad_mensual(anio, mes)
-    st.write(f"**{datetime(anio, mes, 1).strftime('%B %Y')} - {dias_habiles} días hábiles | Capacidad base: {capacidad_base}hs por persona**")
+    st.write(f"**{MESES_ES[mes]} {anio} - {dias_habiles} días hábiles | Capacidad base: {capacidad_base}hs por persona**")
 
     # Filtrar cargas del mes seleccionado
     df_mes = st.session_state.cargas.copy()
@@ -163,7 +168,7 @@ if menu == "Panel de Control":
 
         df_persona = df_melt[df_melt['Operario'] == persona_seleccionada]
         if df_persona.empty:
-            st.info(f"{persona_seleccionada} no tiene horas cargadas en {datetime(anio, mes, 1).strftime('%B %Y')}")
+            st.info(f"{persona_seleccionada} no tiene horas cargadas en {MESES_ES[mes]} {anio}")
         else:
             ocupacion_persona = df_persona.groupby('Tarea')['Horas'].sum().reset_index()
             total_persona = ocupacion_persona['Horas'].sum()
@@ -208,7 +213,7 @@ if menu == "Panel de Control":
             mask = (df_historico['Fecha'].dt.month == m) & (df_historico['Fecha'].dt.year == a)
             total_mes = df_historico[mask][persona_seleccionada].sum()
             data_historico.append({
-                'Mes': datetime(a, m, 1).strftime('%b %Y'),
+                'Mes': f"{MESES_ES[m][:3]} {a}",
                 'Horas': total_mes,
                 'Capacidad': calcular_capacidad_mensual(a, m)[1]
             })
