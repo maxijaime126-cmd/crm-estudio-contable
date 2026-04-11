@@ -26,7 +26,7 @@ OPERARIOS_FIJOS = ["Natalia", "Maximiliano", "Athina", "Johana"]
 HORAS_DIA_LABORAL = 6
 
 # PEGÁ ACÁ LA URL DE TU GOOGLE SHEET ENTRE LAS COMILLAS
-URL_GOOGLE_SHEET = "PEGAR_URL_ACA"
+URL_GOOGLE_SHEET = "https://docs.google.com/spreadsheets/d/1Y6T-GcFWQHWVWkvbNYRgQg9tzTU3moc6ms-o23JpwXE/edit"
 
 # CONEXIÓN A GOOGLE SHEETS
 @st.cache_resource
