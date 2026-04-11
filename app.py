@@ -118,7 +118,7 @@ with col_logout:
         st.rerun()
 
 if st.session_state.usuario_actual == "Admin - Ver todo":
-    menu = st.sidebar.radio("Menú", ["Panel de Control", "Cargar Horas", "Excepciones", "Exportar Excel"])
+    menu = st.sidebar.radio("Menú", ["Panel de Control", "Cargar Horas", "Excepciones", "Exportar Excel", "Resetear Datos"])
 else:
     menu = st.sidebar.radio("Menú", ["Panel de Control", "Cargar Mis Horas"])
 
@@ -335,3 +335,19 @@ elif menu == "Exportar Excel":
         col1, col2 = st.columns(2)
         col1.download_button("⬇️ Descargar Cargas.csv", csv_cargas, "cargas.csv", "text/csv")
         col2.download_button("⬇️ Descargar Excepciones.csv", csv_exc, "excepciones.csv", "text/csv")
+
+# ===== RESETEAR DATOS - SOLO ADMIN =====
+elif menu == "Resetear Datos":
+    st.title("⚠️ Resetear Datos")
+    st.error("Esto borra TODAS las cargas del sistema. No se puede deshacer.")
+    st.info("Las cargas viejas de Natalia y Athina que viste son datos de prueba. Usá esto para empezar limpio.")
+
+    confirmacion = st.text_input("Escribí BORRAR para confirmar", placeholder="BORRAR")
+    if confirmacion == "BORRAR":
+        if st.button("🗑️ Borrar todas las cargas", type="primary"):
+            df_vacio = pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota'])
+            guardar_df("Cargas", df_vacio)
+            st.session_state.cargas = df_vacio
+            st.success("✅ Base limpiada. Todas las cargas fueron eliminadas.")
+            st.balloons()
+            st.rerun()
