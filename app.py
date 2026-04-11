@@ -54,7 +54,6 @@ def cargar_hoja(nombre_hoja):
         df.columns = df.columns.str.strip()
         for col in df.columns:
             if 'fecha' in col.lower():
-                # FIX: Leer siempre como DD/MM/YYYY
                 df[col] = pd.to_datetime(df[col], format='%d/%m/%Y', errors='coerce').dt.date
         return df, ws
     except:
@@ -66,9 +65,8 @@ def guardar_df(nombre_hoja, df):
 
     df_copy = df.copy()
     for col in df_copy.columns:
-        if pd.api.types.is_datetime64_any_dtype(df_copy[col]) or isinstance(df_copy[col].iloc[0] if not df_copy.empty else None, datetime.date):
-            # FIX: Guardar como DD/MM/YYYY para que no se invierta
-            df_copy[col] = pd.to_datetime(df_copy[col]).dt.strftime('%d/%m/%Y')
+        if 'fecha' in col.lower():
+            df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.strftime('%d/%m/%Y')
 
     df_copy = df_copy.fillna('').astype(str)
 
@@ -439,10 +437,17 @@ elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
         for i, row in df_mis_cargas.iterrows():
             col1, col2 = st.columns([5,1])
             with col1:
-                fecha_dt = pd.to_datetime(row['Fecha'], format='%d/%m/%Y', errors='coerce')
-                fecha_formateada = fecha_dt.strftime('%d/%m/%Y')
-                dia_sem = DIAS_SEMANA_ES[fecha_dt.weekday()]
-                st.write(f"**{fecha_formateada} ({dia_sem}) - {row['Tarea']}** | {row[usuario_carga]}hs | {row['Nota']}")
+                # FIX: Validar que la fecha no sea NaT antes de formatear
+                if pd.notna(row['Fecha']):
+                    fecha_dt = pd.to_datetime(row['Fecha'], format='%d/%m/%Y', errors='coerce')
+                    if pd.notna(fecha_dt):
+                        fecha_formateada = fecha_dt.strftime('%d/%m/%Y')
+                        dia_sem = DIAS_SEMANA_ES[fecha_dt.weekday()]
+                        st.write(f"**{fecha_formateada} ({dia_sem}) - {row['Tarea']}** | {row[usuario_carga]}hs | {row['Nota']}")
+                    else:
+                        st.write(f"**Fecha inválida - {row['Tarea']}** | {row[usuario_carga]}hs | {row['Nota']}")
+                else:
+                    st.write(f"**Sin fecha - {row['Tarea']}** | {row[usuario_carga]}hs | {row['Nota']}")
             with col2:
                 if st.button("Eliminar", key=f"del_{i}"):
                     st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True)
