@@ -442,15 +442,33 @@ elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
             st.rerun()
 
     st.subheader("Mis Cargas Registradas")
+
+    # Filtro para ver solo el día seleccionado o todo el historial
+    col_filtro1, col_filtro2 = st.columns([1, 3])
+    with col_filtro1:
+        ver_solo_dia = st.checkbox("Solo este día", value=False)
+
     df_mis_cargas = st.session_state.cargas.copy()
     df_mis_cargas = df_mis_cargas[df_mis_cargas[usuario_carga] > 0]
-    # Ordenar descendente: lo más nuevo arriba
     df_mis_cargas['Fecha'] = pd.to_datetime(df_mis_cargas['Fecha'], errors='coerce')
+
+    # Aplicar filtro si está activado
+    if ver_solo_dia and fecha:
+        df_mis_cargas = df_mis_cargas[df_mis_cargas['Fecha'].dt.date == fecha]
+        if df_mis_cargas.empty:
+            st.info(f"No tenés cargas registradas el {fecha.strftime('%d/%m/%Y')}")
+
+    # Ordenar descendente: lo más nuevo arriba
     df_mis_cargas = df_mis_cargas.sort_values('Fecha', ascending=False)
 
-    if df_mis_cargas.empty:
+    if df_mis_cargas.empty and not ver_solo_dia:
         st.info("No tenés cargas registradas")
-    else:
+    elif not df_mis_cargas.empty:
+        # Mostrar total del día seleccionado
+        if ver_solo_dia:
+            total_dia = df_mis_cargas[usuario_carga].sum()
+            st.metric(f"Total cargado el {fecha.strftime('%d/%m/%Y')}", f"{total_dia:.1f} hs")
+
         for i, row in df_mis_cargas.iterrows():
             col1, col2 = st.columns([5,1])
             with col1:
