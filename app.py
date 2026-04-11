@@ -7,6 +7,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 from io import BytesIO
 import base64
+import time
 
 st.set_page_config(page_title="CRM Capacidad Instalada", layout="wide")
 
@@ -30,6 +31,11 @@ HORAS_DIA_LABORAL = 6
 MESES_ES = {
     1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
     7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
+}
+
+DIAS_SEMANA_ES = {
+    0: "Lunes", 1: "Martes", 2: "Miércoles", 3: "Jueves",
+    4: "Viernes", 5: "Sábado", 6: "Domingo"
 }
 
 # ===== CONEXIÓN GOOGLE SHEETS =====
@@ -80,7 +86,6 @@ def generar_pdf_reporte(tipo, persona, mes, anio, capacidad_base, total_horas, p
     elements = []
     styles = getSampleStyleSheet()
 
-    # Título
     titulo_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontSize=18, textColor=colors.HexColor('#1a1a1a'), spaceAfter=30, alignment=1)
     subtitulo_style = ParagraphStyle('CustomSub', parent=styles['Heading2'], fontSize=14, textColor=colors.HexColor('#333'), spaceAfter=20)
 
@@ -93,7 +98,6 @@ def generar_pdf_reporte(tipo, persona, mes, anio, capacidad_base, total_horas, p
     elements.append(Paragraph(f"{MESES_ES[mes]} {anio}", subtitulo_style))
     elements.append(Spacer(1, 0.5*cm))
 
-    # Métricas principales
     data_metricas = [
         ["Métrica", "Valor"],
         ["Total Cargado", f"{total_horas:.1f} hs"],
@@ -116,7 +120,6 @@ def generar_pdf_reporte(tipo, persona, mes, anio, capacidad_base, total_horas, p
     elements.append(tabla_metricas)
     elements.append(Spacer(1, 1*cm))
 
-    # Distribución por tareas
     elements.append(Paragraph("Distribución por Tareas", subtitulo_style))
     data_tareas = [["Tarea", "Horas", "Porcentaje"]]
     for _, row in df_tareas.iterrows():
@@ -137,7 +140,6 @@ def generar_pdf_reporte(tipo, persona, mes, anio, capacidad_base, total_horas, p
     ]))
     elements.append(tabla_tareas)
 
-    # Resumen equipo si es reporte total
     if tipo == "equipo" and df_resumen is not None:
         elements.append(Spacer(1, 1*cm))
         elements.append(Paragraph("Resumen del Equipo", subtitulo_style))
@@ -158,7 +160,6 @@ def generar_pdf_reporte(tipo, persona, mes, anio, capacidad_base, total_horas, p
         ]))
         elements.append(tabla_resumen)
 
-    # Footer
     elements.append(Spacer(1, 2*cm))
     footer_style = ParagraphStyle('Footer', parent=styles['Normal'], fontSize=9, textColor=colors.grey, alignment=1)
     elements.append(Paragraph(f"Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')}", footer_style))
@@ -391,13 +392,23 @@ elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
         usuario_carga = st.session_state.usuario_actual
         st.info(f"Cargando horas para: **{usuario_carga}**")
 
+    # Placeholder para mensaje de éxito
+    placeholder_exito = st.empty()
+
     with st.form("form_carga", clear_on_submit=True):
-        fecha = st.date_input("Fecha", value=datetime.now())
+        fecha = st.date_input("Fecha", value=datetime.now(), format="DD/MM/YYYY")
+        # Mostrar día de la semana en español
+        if fecha:
+            dia_semana = DIAS_SEMANA_ES[fecha.weekday()]
+            st.caption(f"📅 {dia_semana} {fecha.day} de {MESES_ES[fecha.month]} {fecha.year}")
+
         tarea = st.selectbox("Área/Tarea", list(COLORES_TAREAS.keys()))
         horas = st.number_input(f"Horas trabajadas por {usuario_carga}", min_value=0.0, value=0.0, step=0.5)
         nota = st.text_area("Nota - opcional", placeholder="Ej: Cliente López, cierre mensual")
 
-        if st.form_submit_button("Guardar Carga") and horas > 0:
+        submitted = st.form_submit_button("Guardar Carga")
+
+        if submitted and horas > 0:
             nueva_fila = {'Fecha': fecha, 'Tarea': tarea, 'Nota': nota}
             for op in OPERARIOS_FIJOS:
                 nueva_fila[op] = horas if op == usuario_carga else 0
@@ -405,12 +416,18 @@ elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
             nueva_carga = pd.DataFrame([nueva_fila])
             st.session_state.cargas = pd.concat([st.session_state.cargas, nueva_carga], ignore_index=True)
             guardar_df("Cargas", st.session_state.cargas)
-            st.success(f"✅ Carga guardada: {horas}hs de {tarea} para {usuario_carga}")
+
+            # Mensaje verde destacado
+            with placeholder_exito:
+                st.success(f"✅ **GUARDADO CORRECTAMENTE** - {horas}hs de {tarea} para {usuario_carga}")
+            time.sleep(3)
             st.rerun()
 
     st.subheader("Mis Cargas Registradas")
     df_mis_cargas = st.session_state.cargas.copy()
     df_mis_cargas = df_mis_cargas[df_mis_cargas[usuario_carga] > 0]
+    # Ordenar descendente: lo más nuevo arriba
+    df_mis_cargas = df_mis_cargas.sort_values('Fecha', ascending=False)
 
     if df_mis_cargas.empty:
         st.info("No tenés cargas registradas")
@@ -418,7 +435,9 @@ elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
         for i, row in df_mis_cargas.iterrows():
             col1, col2 = st.columns([5,1])
             with col1:
-                st.write(f"**{row['Fecha']} - {row['Tarea']}** | {row[usuario_carga]}hs | {row['Nota']}")
+                fecha_formateada = pd.to_datetime(row['Fecha']).strftime('%d/%m/%Y')
+                dia_sem = DIAS_SEMANA_ES[pd.to_datetime(row['Fecha']).weekday()]
+                st.write(f"**{fecha_formateada} ({dia_sem}) - {row['Tarea']}** | {row[usuario_carga]}hs | {row['Nota']}")
             with col2:
                 if st.button("Eliminar", key=f"del_{i}"):
                     st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True)
@@ -434,9 +453,9 @@ elif menu == "Excepciones":
         col1, col2 = st.columns(2)
         with col1:
             operario = st.selectbox("Operario", OPERARIOS_FIJOS)
-            fecha_inicio_exc = st.date_input("Fecha Inicio")
+            fecha_inicio_exc = st.date_input("Fecha Inicio", format="DD/MM/YYYY")
         with col2:
-            fecha_fin_exc = st.date_input("Fecha Fin")
+            fecha_fin_exc = st.date_input("Fecha Fin", format="DD/MM/YYYY")
             motivo = st.selectbox("Motivo", ["Vacaciones", "Licencia", "Enfermedad", "Otro"])
 
         if st.form_submit_button("Guardar Excepción"):
