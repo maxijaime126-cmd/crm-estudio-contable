@@ -5,6 +5,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import gspread
 from google.oauth2.service_account import Credentials
+from io import BytesIO
+import base64
 
 st.set_page_config(page_title="CRM Capacidad Instalada", layout="wide")
 
@@ -55,7 +57,6 @@ def guardar_df(nombre_hoja, df):
     ws = conectar_sheets().worksheet(nombre_hoja)
     ws.clear()
 
-    # FIX: Convertir fechas y NaN para que gspread no rompa
     df_copy = df.copy()
     for col in df_copy.columns:
         if pd.api.types.is_datetime64_any_dtype(df_copy[col]):
@@ -65,6 +66,106 @@ def guardar_df(nombre_hoja, df):
 
     ws.update([df_copy.columns.values.tolist()] + df_copy.values.tolist())
     st.cache_data.clear()
+
+# ===== FUNCIÓN GENERAR PDF =====
+def generar_pdf_reporte(tipo, persona, mes, anio, capacidad_base, total_horas, porcentaje, estado, df_tareas, df_resumen=None):
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib import colors
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.units import cm
+
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    elements = []
+    styles = getSampleStyleSheet()
+
+    # Título
+    titulo_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontSize=18, textColor=colors.HexColor('#1a1a1a'), spaceAfter=30, alignment=1)
+    subtitulo_style = ParagraphStyle('CustomSub', parent=styles['Heading2'], fontSize=14, textColor=colors.HexColor('#333'), spaceAfter=20)
+
+    if tipo == "individual":
+        titulo = f"Reporte de Ocupación - {persona}"
+    else:
+        titulo = "Reporte de Ocupación - Equipo Total"
+
+    elements.append(Paragraph(titulo, titulo_style))
+    elements.append(Paragraph(f"{MESES_ES[mes]} {anio}", subtitulo_style))
+    elements.append(Spacer(1, 0.5*cm))
+
+    # Métricas principales
+    data_metricas = [
+        ["Métrica", "Valor"],
+        ["Total Cargado", f"{total_horas:.1f} hs"],
+        ["Capacidad", f"{capacidad_base:.1f} hs" if tipo == "individual" else f"{capacidad_base * 4:.1f} hs"],
+        ["Ocupación", f"{porcentaje:.1f}%"],
+        ["Estado", estado]
+    ]
+
+    tabla_metricas = Table(data_metricas, colWidths=[8*cm, 6*cm])
+    tabla_metricas.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4A90E2')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black)
+    ]))
+    elements.append(tabla_metricas)
+    elements.append(Spacer(1, 1*cm))
+
+    # Distribución por tareas
+    elements.append(Paragraph("Distribución por Tareas", subtitulo_style))
+    data_tareas = [["Tarea", "Horas", "Porcentaje"]]
+    for _, row in df_tareas.iterrows():
+        porc = (row['Horas'] / total_horas * 100) if total_horas > 0 else 0
+        data_tareas.append([row['Tarea'], f"{row['Horas']:.1f}", f"{porc:.1f}%"])
+
+    tabla_tareas = Table(data_tareas, colWidths=[8*cm, 3*cm, 3*cm])
+    tabla_tareas.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4A90E2')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+        ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 11),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
+    ]))
+    elements.append(tabla_tareas)
+
+    # Resumen equipo si es reporte total
+    if tipo == "equipo" and df_resumen is not None:
+        elements.append(Spacer(1, 1*cm))
+        elements.append(Paragraph("Resumen del Equipo", subtitulo_style))
+        data_resumen = [["Operario", "Horas", "Capacidad", "% Ocupación", "Estado"]]
+        for _, row in df_resumen.iterrows():
+            data_resumen.append([row['Operario'], f"{row['Horas']:.1f}", f"{row['Capacidad']:.0f}", row['% Ocupación'], row['Estado']])
+
+        tabla_resumen = Table(data_resumen, colWidths=[3.5*cm, 2*cm, 2.5*cm, 2.5*cm, 2*cm])
+        tabla_resumen.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4A90E2')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, 0), 11),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
+        ]))
+        elements.append(tabla_resumen)
+
+    # Footer
+    elements.append(Spacer(1, 2*cm))
+    footer_style = ParagraphStyle('Footer', parent=styles['Normal'], fontSize=9, textColor=colors.grey, alignment=1)
+    elements.append(Paragraph(f"Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')}", footer_style))
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
 
 # Cargar feriados
 feriados_df, _ = cargar_hoja("Feriados")
@@ -194,6 +295,18 @@ if menu == "Panel de Control":
                 st.metric("Capacidad", f"{capacidad_base} hs")
                 st.metric("Ocupación", f"{porcentaje:.1f}%", delta=f"{color_semaforo}")
 
+                # Botón descarga PDF individual
+                pdf_individual = generar_pdf_reporte(
+                    "individual", persona_seleccionada, mes, anio,
+                    capacidad_base, total_persona, porcentaje, color_semaforo, ocupacion_persona
+                )
+                st.download_button(
+                    label="📄 Descargar Reporte PDF",
+                    data=pdf_individual,
+                    file_name=f"reporte_{persona_seleccionada}_{MESES_ES[mes]}_{anio}.pdf",
+                    mime="application/pdf"
+                )
+
         # ===== HISTÓRICO 3 MESES =====
         st.subheader("Histórico Últimos 3 Meses")
         df_historico = st.session_state.cargas.copy()
@@ -255,6 +368,18 @@ if menu == "Panel de Control":
             resumen['Estado'] = resumen['% Ocupación'].apply(lambda x: "🔴" if x > 100 else "🟡" if x >= 80 else "🟢")
             resumen['% Ocupación'] = resumen['% Ocupación'].astype(str) + '%'
             st.dataframe(resumen, use_container_width=True, hide_index=True)
+
+            # Botón descarga PDF equipo
+            pdf_equipo = generar_pdf_reporte(
+                "equipo", "Equipo", mes, anio,
+                capacidad_base, total_equipo, ocup_equipo, "", distribucion, resumen
+            )
+            st.download_button(
+                label="📄 Descargar Reporte Equipo PDF",
+                data=pdf_equipo,
+                file_name=f"reporte_equipo_{MESES_ES[mes]}_{anio}.pdf",
+                mime="application/pdf"
+            )
 
 # ===== CARGAR HORAS =====
 elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
