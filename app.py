@@ -1,57 +1,57 @@
 import streamlit as st
 import pandas as pd
+from datetime import datetime, timedelta
+import plotly.express as px
+import plotly.graph_objects as go
 import gspread
 from google.oauth2.service_account import Credentials
-from datetime import datetime, date
-import numpy as np
+
+st.set_page_config(page_title="CRM Capacidad Instalada", layout="wide")
 
 # ===== CONFIGURACIÓN =====
-SCOPE = [
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive"
-]
+COLORES_TAREAS = {
+    "DOCUMENTACIÓN (incluye carga y control)": "#FFB6C1",
+    "IMPUESTOS": "#FF00FF",
+    "SUELDOS": "#FFFF00",
+    "CONTABILIDAD": "#00FF00",
+    "ATENCION AL CLIENTE": "#00BFFF",
+    "TAREAS NO RUTINARIAS": "#ADD8E6",
+    "DISPONIBLE": "#FFFFFF",
+    "REUNIONES DE EQUIPO": "#E6E6FA",
+    "INASISTENCIA POR EXAMEN O TRAMITE": "#FFDAB9",
+    "PLANIFICACIONES/ORGANIZACIÓN/PROCEDIMIENTO S/INFORMES": "#40E0D0"
+}
 
-# Leemos las credenciales desde st.secrets
-creds = Credentials.from_service_account_info(
-    st.secrets["gcp_service_account"],
-    scopes=SCOPE
-)
-client = gspread.authorize(creds)
+OPERARIOS_FIJOS = ["Natalia", "Maximiliano", "Athina", "Johana"]
+HORAS_DIA_LABORAL = 6
 
-# Abrimos el Sheet por nombre
-SHEET_NAME = "CRM_Estudio_Datos"
-sh = client.open(SHEET_NAME)
+# ===== CONEXIÓN GOOGLE SHEETS =====
+@st.cache_resource
+def conectar_sheets():
+    scopes = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scopes)
+    client = gspread.authorize(creds)
+    return client.open("CRM_Estudio_Datos")
 
-USUARIOS = ["Admin", "Natalia", "Lautaro", "Maxi"]
-CLIENTES = ["Estudio Contable A", "Cliente B", "Cliente C"]
-TAREAS = ["Liquidación", "IVA", "Ganancias", "Sueldos", "Monotributo", "Consulta", "Otro"]
-
-# ===== FUNCIONES =====
-def cargar_df(nombre_hoja):
-    """Lee una hoja y devuelve DataFrame. Si está vacía, devuelve df con columnas correctas"""
+@st.cache_data(ttl=60)
+def cargar_hoja(nombre_hoja):
     try:
-        ws = sh.worksheet(nombre_hoja)
-        data = ws.get_all_records()
-        if not data:
-            if nombre_hoja == "Cargas":
-                return pd.DataFrame(columns=["Fecha", "Usuario", "Cliente", "Tarea", "Horas", "Comentario", "Timestamp_Carga"])
-            else:
-                return pd.DataFrame()
-        df = pd.DataFrame(data)
-        return df
-    except gspread.exceptions.WorksheetNotFound:
-        if nombre_hoja == "Cargas":
-            return pd.DataFrame(columns=["Fecha", "Usuario", "Cliente", "Tarea", "Horas", "Comentario", "Timestamp_Carga"])
-        return pd.DataFrame()
+        ws = conectar_sheets().worksheet(nombre_hoja)
+        df = pd.DataFrame(ws.get_all_records())
+        df.columns = df.columns.str.strip()
+        for col in df.columns:
+            if 'fecha' in col.lower():
+                df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce').dt.date
+        return df, ws
+    except:
+        return pd.DataFrame(), None
 
 def guardar_df(nombre_hoja, df):
-    """Guarda el DataFrame en Google Sheets"""
-    ws = sh.worksheet(nombre_hoja)
+    ws = conectar_sheets().worksheet(nombre_hoja)
     ws.clear()
 
-    df_copy = df.copy()
-
     # FIX: Convertir fechas y NaN para que gspread no rompa
+    df_copy = df.copy()
     for col in df_copy.columns:
         if pd.api.types.is_datetime64_any_dtype(df_copy[col]):
             df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d')
@@ -59,116 +59,263 @@ def guardar_df(nombre_hoja, df):
     df_copy = df_copy.fillna('').astype(str)
 
     ws.update([df_copy.columns.values.tolist()] + df_copy.values.tolist())
+    st.cache_data.clear()
 
-# ===== LOGIN SIMPLE =====
-st.set_page_config(page_title="CRM Estudio", page_icon="⏱️", layout="wide")
+# Cargar feriados
+feriados_df, _ = cargar_hoja("Feriados")
+if not feriados_df.empty and 'fecha' in feriados_df.columns:
+    FERIADOS = pd.to_datetime(feriados_df['fecha']).dt.date.tolist()
+else:
+    FERIADOS = []
 
-if "usuario" not in st.session_state:
-    st.session_state.usuario = None
+# ===== FUNCIONES =====
+def calcular_dias_habiles(fecha_inicio, fecha_fin):
+    dias = pd.bdate_range(start=fecha_inicio, end=fecha_fin, freq='C', holidays=FERIADOS)
+    return len(dias)
 
-if st.session_state.usuario is None:
-    st.title("⏱️ CRM Estudio Contable")
+def calcular_capacidad_mensual(anio, mes):
+    inicio = datetime(anio, mes, 1)
+    if mes == 12:
+        fin = datetime(anio + 1, 1, 1) - timedelta(days=1)
+    else:
+        fin = datetime(anio, mes + 1, 1) - timedelta(days=1)
+    dias_habiles = calcular_dias_habiles(inicio.date(), fin.date())
+    return dias_habiles, dias_habiles * HORAS_DIA_LABORAL
+
+# ===== SESSION STATE =====
+if 'cargas' not in st.session_state:
+    df, _ = cargar_hoja("Cargas")
+    if df.empty:
+        df = pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota'])
+    st.session_state.cargas = df
+
+if 'excepciones' not in st.session_state:
+    df, _ = cargar_hoja("Excepciones")
+    if df.empty:
+        df = pd.DataFrame(columns=['Operario', 'Fecha Inicio', 'Fecha Fin', 'Motivo', 'Horas'])
+    st.session_state.excepciones = df
+
+# ===== LOGIN =====
+if 'usuario_actual' not in st.session_state:
+    st.session_state.usuario_actual = None
+
+if st.session_state.usuario_actual is None:
+    st.title("CRM Capacidad Instalada - Estudio")
     st.subheader("Seleccioná tu usuario para ingresar")
-    usuario_seleccionado = st.selectbox("Usuario", USUARIOS)
-    if st.button("Ingresar", type="primary"):
-        st.session_state.usuario = usuario_seleccionado
+    usuario = st.selectbox("Soy:", ["Seleccionar..."] + OPERARIOS_FIJOS + ["Admin - Ver todo"])
+    if st.button("Ingresar") and usuario!= "Seleccionar...":
+        st.session_state.usuario_actual = usuario
         st.rerun()
     st.stop()
 
-# ===== APP PRINCIPAL =====
-usuario_actual = st.session_state.usuario
-es_admin = usuario_actual == "Admin"
+# ===== SIDEBAR =====
+col_user, col_logout = st.sidebar.columns([3,1])
+with col_user:
+    st.sidebar.success(f"Usuario: **{st.session_state.usuario_actual}**")
+with col_logout:
+    if st.sidebar.button("Salir"):
+        st.session_state.clear()
+        st.rerun()
 
-st.sidebar.success(f"Usuario: {usuario_actual}")
-if st.sidebar.button("Cerrar sesión"):
-    st.session_state.usuario = None
-    st.rerun()
+if st.session_state.usuario_actual == "Admin - Ver todo":
+    menu = st.sidebar.radio("Menú", ["Panel de Control", "Cargar Horas", "Excepciones", "Exportar Excel"])
+else:
+    menu = st.sidebar.radio("Menú", ["Panel de Control", "Cargar Mis Horas"])
 
-st.title("⏱️ Carga de Horas")
+# ===== PANEL DE CONTROL =====
+if menu == "Panel de Control":
+    st.title("Panel de Control - Capacidad Instalada")
 
-# Cargamos datos
-if "cargas" not in st.session_state:
-    st.session_state.cargas = cargar_df("Cargas")
-
-# ===== FORMULARIO DE CARGA =====
-with st.form("form_carga", clear_on_submit=True):
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
-        fecha = st.date_input("Fecha", value=date.today())
+        anio = st.selectbox("Año", [2025, 2026, 2027], index=1)
     with col2:
-        cliente = st.selectbox("Cliente", CLIENTES)
-    with col3:
-        tarea = st.selectbox("Tarea", TAREAS)
+        mes = st.selectbox("Mes", list(range(1,13)),
+                           format_func=lambda x: datetime(1900, x, 1).strftime('%B'),
+                           index=3)
 
-    col4, col5 = st.columns([1, 3])
-    with col4:
-        horas = st.number_input("Horas", min_value=0.0, max_value=24.0, step=0.25)
-    with col5:
-        comentario = st.text_input("Comentario", placeholder="Opcional")
+    dias_habiles, capacidad_base = calcular_capacidad_mensual(anio, mes)
+    st.write(f"**{datetime(anio, mes, 1).strftime('%B %Y')} - {dias_habiles} días hábiles | Capacidad base: {capacidad_base}hs por persona**")
 
-    submitted = st.form_submit_button("💾 Guardar horas", type="primary")
+    df_mes = st.session_state.cargas.copy()
+    if not df_mes.empty:
+        df_mes['Fecha'] = pd.to_datetime(df_mes['Fecha'])
+        mask = (df_mes['Fecha'].dt.month == mes) & (df_mes['Fecha'].dt.year == anio)
+        df_mes = df_mes[mask]
 
-    if submitted:
-        if horas <= 0:
-            st.error("Las horas deben ser mayor a 0")
+    if df_mes.empty:
+        st.info("Cargá horas para ver el gráfico")
+    else:
+        df_melt = df_mes.melt(id_vars=['Fecha', 'Tarea', 'Nota'],
+                              value_vars=OPERARIOS_FIJOS,
+                              var_name='Operario', value_name='Horas')
+        df_melt = df_melt[df_melt['Horas'] > 0]
+
+        st.subheader("Mi Ocupación Mensual")
+        if st.session_state.usuario_actual == "Admin - Ver todo":
+            persona_seleccionada = st.selectbox("Seleccionar persona", OPERARIOS_FIJOS)
         else:
-            nueva_fila = {
-                "Fecha": fecha,
-                "Usuario": usuario_actual,
-                "Cliente": cliente,
-                "Tarea": tarea,
-                "Horas": horas,
-                "Comentario": comentario,
-                "Timestamp_Carga": datetime.now()
-            }
-            st.session_state.cargas = pd.concat(
-                [st.session_state.cargas, pd.DataFrame([nueva_fila])],
-                ignore_index=True
-            )
+            persona_seleccionada = st.session_state.usuario_actual
+            st.caption(f"Mostrando datos de: **{persona_seleccionada}**")
+
+        df_persona = df_melt[df_melt['Operario'] == persona_seleccionada]
+        if df_persona.empty:
+            st.info(f"{persona_seleccionada} no tiene horas cargadas en {datetime(anio, mes, 1).strftime('%B %Y')}")
+        else:
+            ocupacion_persona = df_persona.groupby('Tarea')['Horas'].sum().reset_index()
+            total_persona = ocupacion_persona['Horas'].sum()
+
+            porcentaje = (total_persona / capacidad_base * 100)
+            if porcentaje > 100:
+                color_semaforo = "🔴 Sobrecarga"
+            elif porcentaje >= 80:
+                color_semaforo = "🟡 Al límite"
+            else:
+                color_semaforo = "🟢 OK"
+
+            col_torta, col_detalle = st.columns([2,1])
+            with col_torta:
+                fig_persona = px.pie(ocupacion_persona, values='Horas', names='Tarea',
+                                     color='Tarea', color_discrete_map=COLORES_TAREAS)
+                fig_persona.update_traces(textposition='inside', textinfo='percent+label')
+                fig_persona.update_layout(title=f"{total_persona:.1f}hs de {capacidad_base}hs")
+                st.plotly_chart(fig_persona, use_container_width=True)
+
+            with col_detalle:
+                st.metric("Total cargado", f"{total_persona:.1f} hs")
+                st.metric("Capacidad", f"{capacidad_base} hs")
+                st.metric("Ocupación", f"{porcentaje:.1f}%", delta=f"{color_semaforo}")
+
+        st.subheader("Histórico Últimos 3 Meses")
+        df_historico = st.session_state.cargas.copy()
+        df_historico['Fecha'] = pd.to_datetime(df_historico['Fecha'])
+
+        meses_historico = []
+        for i in range(3):
+            mes_calc = mes - i
+            anio_calc = anio
+            if mes_calc <= 0:
+                mes_calc += 12
+                anio_calc -= 1
+            meses_historico.append((anio_calc, mes_calc))
+
+        data_historico = []
+        for a, m in reversed(meses_historico):
+            mask = (df_historico['Fecha'].dt.month == m) & (df_historico['Fecha'].dt.year == a)
+            total_mes = df_historico[mask][persona_seleccionada].sum()
+            data_historico.append({
+                'Mes': datetime(a, m, 1).strftime('%b %Y'),
+                'Horas': total_mes,
+                'Capacidad': calcular_capacidad_mensual(a, m)[1]
+            })
+
+        df_hist = pd.DataFrame(data_historico)
+        fig_hist = go.Figure()
+        fig_hist.add_trace(go.Bar(x=df_hist['Mes'], y=df_hist['Horas'], name='Horas Cargadas', marker_color='#00BFFF'))
+        fig_hist.add_trace(go.Scatter(x=df_hist['Mes'], y=df_hist['Capacidad'], name='Capacidad',
+                                     line=dict(color='red', dash='dash')))
+        fig_hist.update_layout(title=f"Evolución de {persona_seleccionada}", yaxis_title="Horas")
+        st.plotly_chart(fig_hist, use_container_width=True)
+
+        if st.session_state.usuario_actual == "Admin - Ver todo":
+            st.subheader("Distribución del Estudio")
+            distribucion = df_melt.groupby('Tarea')['Horas'].sum().reset_index()
+
+            fig_estudio = px.pie(distribucion, values='Horas', names='Tarea',
+                         color='Tarea', color_discrete_map=COLORES_TAREAS,
+                         title='Total del estudio por área')
+            fig_estudio.update_traces(textposition='inside', textinfo='percent+label')
+            st.plotly_chart(fig_estudio, use_container_width=True)
+
+            st.subheader("Resumen del Equipo")
+            resumen = df_melt.groupby('Operario')['Horas'].sum().reset_index()
+            resumen['Capacidad'] = capacidad_base
+            resumen['% Ocupación'] = (resumen['Horas'] / capacidad_base * 100).round(1)
+            resumen['Estado'] = resumen['% Ocupación'].apply(lambda x: "🔴" if x > 100 else "🟡" if x >= 80 else "🟢")
+            resumen['% Ocupación'] = resumen['% Ocupación'].astype(str) + '%'
+            st.dataframe(resumen, use_container_width=True, hide_index=True)
+
+# ===== CARGAR HORAS =====
+elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
+    st.title("Cargar Horas")
+
+    if st.session_state.usuario_actual == "Admin - Ver todo":
+        usuario_carga = st.selectbox("Cargar horas para:", OPERARIOS_FIJOS)
+    else:
+        usuario_carga = st.session_state.usuario_actual
+        st.info(f"Cargando horas para: **{usuario_carga}**")
+
+    with st.form("form_carga", clear_on_submit=True):
+        fecha = st.date_input("Fecha", value=datetime.now())
+        tarea = st.selectbox("Área/Tarea", list(COLORES_TAREAS.keys()))
+        horas = st.number_input(f"Horas trabajadas por {usuario_carga}", min_value=0.0, value=0.0, step=0.5)
+        nota = st.text_area("Nota - opcional", placeholder="Ej: Cliente López, cierre mensual")
+
+        if st.form_submit_button("Guardar Carga") and horas > 0:
+            nueva_fila = {'Fecha': fecha, 'Tarea': tarea, 'Nota': nota}
+            for op in OPERARIOS_FIJOS:
+                nueva_fila[op] = horas if op == usuario_carga else 0
+
+            nueva_carga = pd.DataFrame([nueva_fila])
+            st.session_state.cargas = pd.concat([st.session_state.cargas, nueva_carga], ignore_index=True)
             guardar_df("Cargas", st.session_state.cargas)
-            st.success(f"✅ Guardado: {horas} hs en {cliente}")
+            st.success(f"✅ Carga guardada: {horas}hs de {tarea} para {usuario_carga}")
             st.rerun()
 
-# ===== TABLA DE CARGAS =====
-st.divider()
-st.subheader("Mis horas cargadas")
+    st.subheader("Mis Cargas Registradas")
+    df_mis_cargas = st.session_state.cargas.copy()
+    df_mis_cargas = df_mis_cargas[df_mis_cargas[usuario_carga] > 0]
 
-df_mostrar = st.session_state.cargas.copy()
-
-# Si no es admin, filtrar solo sus horas
-if not es_admin:
-    df_mostrar = df_mostrar[df_mostrar["Usuario"] == usuario_actual]
-
-# Ordenar por fecha descendente
-if not df_mostrar.empty:
-    df_mostrar["Fecha"] = pd.to_datetime(df_mostrar["Fecha"])
-    df_mostrar = df_mostrar.sort_values("Fecha", ascending=False)
-    df_mostrar["Fecha"] = df_mostrar["Fecha"].dt.strftime('%Y-%m-%d')
-
-st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
-
-# ===== DASHBOARD ADMIN =====
-if es_admin:
-    st.divider()
-    st.subheader("📊 Dashboard Admin")
-
-    if not st.session_state.cargas.empty:
-        df_dash = st.session_state.cargas.copy()
-        df_dash["Fecha"] = pd.to_datetime(df_dash["Fecha"])
-        df_dash["Horas"] = pd.to_numeric(df_dash["Horas"])
-
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.metric("Total Horas Cargadas", f"{df_dash['Horas'].sum():.2f} hs")
-        with col2:
-            st.metric("Total Registros", len(df_dash))
-        with col3:
-            st.metric("Clientes Activos", df_dash['Cliente'].nunique())
-
-        st.write("**Horas por Usuario**")
-        st.bar_chart(df_dash.groupby("Usuario")["Horas"].sum())
-
-        st.write("**Horas por Cliente**")
-        st.bar_chart(df_dash.groupby("Cliente")["Horas"].sum())
+    if df_mis_cargas.empty:
+        st.info("No tenés cargas registradas")
     else:
-        st.info("Todavía no hay horas cargadas.")
+        for i, row in df_mis_cargas.iterrows():
+            col1, col2 = st.columns([5,1])
+            with col1:
+                st.write(f"**{row['Fecha']} - {row['Tarea']}** | {row[usuario_carga]}hs | {row['Nota']}")
+            with col2:
+                if st.button("Eliminar", key=f"del_{i}"):
+                    st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True)
+                    guardar_df("Cargas", st.session_state.cargas)
+                    st.success("✅ Eliminado")
+                    st.rerun()
+
+# ===== EXCEPCIONES =====
+elif menu == "Excepciones":
+    st.title("Excepciones - Vacaciones/Licencias")
+
+    with st.form("form_excepcion", clear_on_submit=True):
+        col1, col2 = st.columns(2)
+        with col1:
+            operario = st.selectbox("Operario", OPERARIOS_FIJOS)
+            fecha_inicio_exc = st.date_input("Fecha Inicio")
+        with col2:
+            fecha_fin_exc = st.date_input("Fecha Fin")
+            motivo = st.selectbox("Motivo", ["Vacaciones", "Licencia", "Enfermedad", "Otro"])
+
+        if st.form_submit_button("Guardar Excepción"):
+            dias = calcular_dias_habiles(fecha_inicio_exc, fecha_fin_exc)
+            horas = dias * HORAS_DIA_LABORAL
+            nuevo = pd.DataFrame([{
+                'Operario': operario, 'Fecha Inicio': fecha_inicio_exc,
+                'Fecha Fin': fecha_fin_exc, 'Motivo': motivo, 'Horas': horas
+            }])
+            st.session_state.excepciones = pd.concat([st.session_state.excepciones, nuevo], ignore_index=True)
+            guardar_df("Excepciones", st.session_state.excepciones)
+            st.success(f"✅ Excepción: {operario} - {dias} días = {horas}hs menos")
+            st.rerun()
+
+    st.subheader("Excepciones Cargadas")
+    st.dataframe(st.session_state.excepciones, use_container_width=True, hide_index=True)
+
+# ===== EXPORTAR EXCEL =====
+elif menu == "Exportar Excel":
+    st.title("Exportar a Excel")
+    if st.session_state.cargas.empty:
+        st.warning("No hay datos para exportar")
+    else:
+        csv_cargas = st.session_state.cargas.to_csv(index=False).encode('utf-8')
+        csv_exc = st.session_state.excepciones.to_csv(index=False).encode('utf-8')
+        col1, col2 = st.columns(2)
+        col1.download_button("⬇️ Descargar Cargas.csv", csv_cargas, "cargas.csv", "text/csv")
+        col2.download_button("⬇️ Descargar Excepciones.csv", csv_exc, "excepciones.csv", "text/csv")
