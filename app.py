@@ -45,22 +45,19 @@ def cargar_df(nombre_hoja):
         return pd.DataFrame()
 
 def guardar_df(nombre_hoja, df):
-    """Guarda el DataFrame en Google Sheets convirtiendo todo a formato JSON válido"""
+    """Guarda el DataFrame en Google Sheets"""
     ws = sh.worksheet(nombre_hoja)
     ws.clear()
 
-    # 1. Hacemos copia para no romper el df original
     df_copy = df.copy()
 
-    # 2. Convertir fechas a texto YYYY-MM-DD
+    # FIX: Convertir fechas y NaN para que gspread no rompa
     for col in df_copy.columns:
         if pd.api.types.is_datetime64_any_dtype(df_copy[col]):
             df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d')
 
-    # 3. Reemplazar NaN/NaT por string vacío y convertir todo a string
     df_copy = df_copy.fillna('').astype(str)
 
-    # 4. Mandar al Sheet
     ws.update([df_copy.columns.values.tolist()] + df_copy.values.tolist())
 
 # ===== LOGIN SIMPLE =====
