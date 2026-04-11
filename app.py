@@ -54,7 +54,8 @@ def cargar_hoja(nombre_hoja):
         df.columns = df.columns.str.strip()
         for col in df.columns:
             if 'fecha' in col.lower():
-                df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce').dt.date
+                # FIX: Leer siempre como DD/MM/YYYY
+                df[col] = pd.to_datetime(df[col], format='%d/%m/%Y', errors='coerce').dt.date
         return df, ws
     except:
         return pd.DataFrame(), None
@@ -65,8 +66,9 @@ def guardar_df(nombre_hoja, df):
 
     df_copy = df.copy()
     for col in df_copy.columns:
-        if pd.api.types.is_datetime64_any_dtype(df_copy[col]):
-            df_copy[col] = df_copy[col].dt.strftime('%Y-%m-%d')
+        if pd.api.types.is_datetime64_any_dtype(df_copy[col]) or isinstance(df_copy[col].iloc[0] if not df_copy.empty else None, datetime.date):
+            # FIX: Guardar como DD/MM/YYYY para que no se invierta
+            df_copy[col] = pd.to_datetime(df_copy[col]).dt.strftime('%d/%m/%Y')
 
     df_copy = df_copy.fillna('').astype(str)
 
@@ -171,7 +173,7 @@ def generar_pdf_reporte(tipo, persona, mes, anio, capacidad_base, total_horas, p
 # Cargar feriados
 feriados_df, _ = cargar_hoja("Feriados")
 if not feriados_df.empty and 'fecha' in feriados_df.columns:
-    FERIADOS = pd.to_datetime(feriados_df['fecha']).dt.date.tolist()
+    FERIADOS = pd.to_datetime(feriados_df['fecha'], format='%d/%m/%Y', errors='coerce').dt.date.tolist()
 else:
     FERIADOS = []
 
@@ -247,7 +249,7 @@ if menu == "Panel de Control":
     # Filtrar cargas del mes seleccionado
     df_mes = st.session_state.cargas.copy()
     if not df_mes.empty:
-        df_mes['Fecha'] = pd.to_datetime(df_mes['Fecha'], errors='coerce')
+        df_mes['Fecha'] = pd.to_datetime(df_mes['Fecha'], format='%d/%m/%Y', errors='coerce')
         mask = (df_mes['Fecha'].dt.month == mes) & (df_mes['Fecha'].dt.year == anio)
         df_mes = df_mes[mask]
 
@@ -311,7 +313,7 @@ if menu == "Panel de Control":
         # ===== HISTÓRICO 3 MESES =====
         st.subheader("Histórico Últimos 3 Meses")
         df_historico = st.session_state.cargas.copy()
-        df_historico['Fecha'] = pd.to_datetime(df_historico['Fecha'], errors='coerce')
+        df_historico['Fecha'] = pd.to_datetime(df_historico['Fecha'], format='%d/%m/%Y', errors='coerce')
 
         meses_historico = []
         for i in range(3):
@@ -396,11 +398,12 @@ elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
     placeholder_exito = st.empty()
 
     with st.form("form_carga", clear_on_submit=True):
+        st.markdown("**Formato: Día/Mes/Año** - Ej: 07/04/2026 es 7 de abril")
         fecha = st.date_input("Fecha", value=datetime.now(), format="DD/MM/YYYY")
-        # Mostrar día de la semana en español
+        # Mostrar día de la semana en español y confirmar la fecha
         if fecha:
             dia_semana = DIAS_SEMANA_ES[fecha.weekday()]
-            st.caption(f"📅 {dia_semana} {fecha.day} de {MESES_ES[fecha.month]} {fecha.year}")
+            st.success(f"📅 Confirmado: **{dia_semana} {fecha.day} de {MESES_ES[fecha.month]} {fecha.year}**")
 
         tarea = st.selectbox("Área/Tarea", list(COLORES_TAREAS.keys()))
         horas = st.number_input(f"Horas trabajadas por {usuario_carga}", min_value=0.0, value=0.0, step=0.5)
@@ -419,7 +422,7 @@ elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
 
             # Mensaje verde destacado
             with placeholder_exito:
-                st.success(f"✅ **GUARDADO CORRECTAMENTE** - {horas}hs de {tarea} para {usuario_carga}")
+                st.success(f"✅ **GUARDADO CORRECTAMENTE** - {horas}hs de {tarea} para {usuario_carga} el {fecha.strftime('%d/%m/%Y')}")
             time.sleep(3)
             st.rerun()
 
@@ -427,6 +430,7 @@ elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
     df_mis_cargas = st.session_state.cargas.copy()
     df_mis_cargas = df_mis_cargas[df_mis_cargas[usuario_carga] > 0]
     # Ordenar descendente: lo más nuevo arriba
+    df_mis_cargas['Fecha'] = pd.to_datetime(df_mis_cargas['Fecha'], format='%d/%m/%Y', errors='coerce')
     df_mis_cargas = df_mis_cargas.sort_values('Fecha', ascending=False)
 
     if df_mis_cargas.empty:
@@ -435,8 +439,9 @@ elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
         for i, row in df_mis_cargas.iterrows():
             col1, col2 = st.columns([5,1])
             with col1:
-                fecha_formateada = pd.to_datetime(row['Fecha']).strftime('%d/%m/%Y')
-                dia_sem = DIAS_SEMANA_ES[pd.to_datetime(row['Fecha']).weekday()]
+                fecha_dt = pd.to_datetime(row['Fecha'], format='%d/%m/%Y', errors='coerce')
+                fecha_formateada = fecha_dt.strftime('%d/%m/%Y')
+                dia_sem = DIAS_SEMANA_ES[fecha_dt.weekday()]
                 st.write(f"**{fecha_formateada} ({dia_sem}) - {row['Tarea']}** | {row[usuario_carga]}hs | {row['Nota']}")
             with col2:
                 if st.button("Eliminar", key=f"del_{i}"):
