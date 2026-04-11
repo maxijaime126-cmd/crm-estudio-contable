@@ -13,7 +13,8 @@ st.set_page_config(page_title="CRM Capacidad Instalada", layout="wide")
 
 # ===== CONFIGURACIÓN =====
 COLORES_TAREAS = {
-    "DOCUMENTACIÓN (incluye carga y control)": "#FFB6C1",
+    "DOCUMENTACIÓN CARGA": "#FFB6C1",
+    "DOCUMENTACIÓN CONTROL": "#FF69B4",
     "IMPUESTOS": "#FF00FF",
     "SUELDOS": "#FFFF00",
     "CONTABILIDAD": "#00FF00",
@@ -38,6 +39,22 @@ DIAS_SEMANA_ES = {
     4: "Viernes", 5: "Sábado", 6: "Domingo"
 }
 
+# ===== FUNCIÓN PARA PARSEAR FECHAS DE AMBOS FORMATOS =====
+def parsear_fecha_flexible(valor):
+    """Lee fechas en formato DD/MM/YYYY o YYYY-MM-DD y devuelve date"""
+    if pd.isna(valor) or valor == '':
+        return None
+    try:
+        return pd.to_datetime(valor, format='%d/%m/%Y', errors='raise').date()
+    except:
+        try:
+            return pd.to_datetime(valor, format='%Y-%m-%d', errors='raise').date()
+        except:
+            try:
+                return pd.to_datetime(valor, dayfirst=True, errors='raise').date()
+            except:
+                return None
+
 # ===== CONEXIÓN GOOGLE SHEETS =====
 @st.cache_resource
 def conectar_sheets():
@@ -54,7 +71,7 @@ def cargar_hoja(nombre_hoja):
         df.columns = df.columns.str.strip()
         for col in df.columns:
             if 'fecha' in col.lower():
-                df[col] = pd.to_datetime(df[col], format='%d/%m/%Y', errors='coerce').dt.date
+                df[col] = df[col].apply(parsear_fecha_flexible)
         return df, ws
     except:
         return pd.DataFrame(), None
@@ -171,7 +188,7 @@ def generar_pdf_reporte(tipo, persona, mes, anio, capacidad_base, total_horas, p
 # Cargar feriados
 feriados_df, _ = cargar_hoja("Feriados")
 if not feriados_df.empty and 'fecha' in feriados_df.columns:
-    FERIADOS = pd.to_datetime(feriados_df['fecha'], format='%d/%m/%Y', errors='coerce').dt.date.tolist()
+    FERIADOS = feriados_df['fecha'].dropna().tolist()
 else:
     FERIADOS = []
 
@@ -247,7 +264,7 @@ if menu == "Panel de Control":
     # Filtrar cargas del mes seleccionado
     df_mes = st.session_state.cargas.copy()
     if not df_mes.empty:
-        df_mes['Fecha'] = pd.to_datetime(df_mes['Fecha'], format='%d/%m/%Y', errors='coerce')
+        df_mes['Fecha'] = pd.to_datetime(df_mes['Fecha'], errors='coerce')
         mask = (df_mes['Fecha'].dt.month == mes) & (df_mes['Fecha'].dt.year == anio)
         df_mes = df_mes[mask]
 
@@ -311,7 +328,7 @@ if menu == "Panel de Control":
         # ===== HISTÓRICO 3 MESES =====
         st.subheader("Histórico Últimos 3 Meses")
         df_historico = st.session_state.cargas.copy()
-        df_historico['Fecha'] = pd.to_datetime(df_historico['Fecha'], format='%d/%m/%Y', errors='coerce')
+        df_historico['Fecha'] = pd.to_datetime(df_historico['Fecha'], errors='coerce')
 
         meses_historico = []
         for i in range(3):
@@ -428,7 +445,7 @@ elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
     df_mis_cargas = st.session_state.cargas.copy()
     df_mis_cargas = df_mis_cargas[df_mis_cargas[usuario_carga] > 0]
     # Ordenar descendente: lo más nuevo arriba
-    df_mis_cargas['Fecha'] = pd.to_datetime(df_mis_cargas['Fecha'], format='%d/%m/%Y', errors='coerce')
+    df_mis_cargas['Fecha'] = pd.to_datetime(df_mis_cargas['Fecha'], errors='coerce')
     df_mis_cargas = df_mis_cargas.sort_values('Fecha', ascending=False)
 
     if df_mis_cargas.empty:
@@ -437,9 +454,9 @@ elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
         for i, row in df_mis_cargas.iterrows():
             col1, col2 = st.columns([5,1])
             with col1:
-                # FIX: Validar que la fecha no sea NaT antes de formatear
+                # Validar que la fecha no sea NaT antes de formatear
                 if pd.notna(row['Fecha']):
-                    fecha_dt = pd.to_datetime(row['Fecha'], format='%d/%m/%Y', errors='coerce')
+                    fecha_dt = pd.to_datetime(row['Fecha'], errors='coerce')
                     if pd.notna(fecha_dt):
                         fecha_formateada = fecha_dt.strftime('%d/%m/%Y')
                         dia_sem = DIAS_SEMANA_ES[fecha_dt.weekday()]
