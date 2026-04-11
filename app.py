@@ -137,21 +137,24 @@ if menu == "Panel de Control":
     dias_habiles, capacidad_base = calcular_capacidad_mensual(anio, mes)
     st.write(f"**{datetime(anio, mes, 1).strftime('%B %Y')} - {dias_habiles} días hábiles | Capacidad base: {capacidad_base}hs por persona**")
 
+    # Filtrar cargas del mes seleccionado
     df_mes = st.session_state.cargas.copy()
     if not df_mes.empty:
-        df_mes['Fecha'] = pd.to_datetime(df_mes['Fecha'])
+        df_mes['Fecha'] = pd.to_datetime(df_mes['Fecha'], errors='coerce')
         mask = (df_mes['Fecha'].dt.month == mes) & (df_mes['Fecha'].dt.year == anio)
         df_mes = df_mes[mask]
 
     if df_mes.empty:
         st.info("Cargá horas para ver el gráfico")
     else:
+        # Preparar datos
         df_melt = df_mes.melt(id_vars=['Fecha', 'Tarea', 'Nota'],
                               value_vars=OPERARIOS_FIJOS,
                               var_name='Operario', value_name='Horas')
         df_melt = df_melt[df_melt['Horas'] > 0]
 
-        st.subheader("Mi Ocupación Mensual")
+        # ===== GRÁFICO 1: TORTA INDIVIDUAL CON FILTRO =====
+        st.subheader("Ocupación Individual")
         if st.session_state.usuario_actual == "Admin - Ver todo":
             persona_seleccionada = st.selectbox("Seleccionar persona", OPERARIOS_FIJOS)
         else:
@@ -186,9 +189,10 @@ if menu == "Panel de Control":
                 st.metric("Capacidad", f"{capacidad_base} hs")
                 st.metric("Ocupación", f"{porcentaje:.1f}%", delta=f"{color_semaforo}")
 
+        # ===== HISTÓRICO 3 MESES =====
         st.subheader("Histórico Últimos 3 Meses")
         df_historico = st.session_state.cargas.copy()
-        df_historico['Fecha'] = pd.to_datetime(df_historico['Fecha'])
+        df_historico['Fecha'] = pd.to_datetime(df_historico['Fecha'], errors='coerce')
 
         meses_historico = []
         for i in range(3):
@@ -217,15 +221,27 @@ if menu == "Panel de Control":
         fig_hist.update_layout(title=f"Evolución de {persona_seleccionada}", yaxis_title="Horas")
         st.plotly_chart(fig_hist, use_container_width=True)
 
+        # ===== GRÁFICO 2: TORTA DEL EQUIPO TOTAL - SOLO ADMIN =====
         if st.session_state.usuario_actual == "Admin - Ver todo":
-            st.subheader("Distribución del Estudio")
-            distribucion = df_melt.groupby('Tarea')['Horas'].sum().reset_index()
+            st.divider()
+            st.subheader("Distribución del Equipo Total")
 
-            fig_estudio = px.pie(distribucion, values='Horas', names='Tarea',
-                         color='Tarea', color_discrete_map=COLORES_TAREAS,
-                         title='Total del estudio por área')
-            fig_estudio.update_traces(textposition='inside', textinfo='percent+label')
-            st.plotly_chart(fig_estudio, use_container_width=True)
+            distribucion = df_melt.groupby('Tarea')['Horas'].sum().reset_index()
+            total_equipo = distribucion['Horas'].sum()
+
+            col_torta_eq, col_detalle_eq = st.columns([2,1])
+            with col_torta_eq:
+                fig_estudio = px.pie(distribucion, values='Horas', names='Tarea',
+                             color='Tarea', color_discrete_map=COLORES_TAREAS)
+                fig_estudio.update_traces(textposition='inside', textinfo='percent+label')
+                fig_estudio.update_layout(title=f"Total equipo: {total_equipo:.1f}hs")
+                st.plotly_chart(fig_estudio, use_container_width=True)
+
+            with col_detalle_eq:
+                st.metric("Total Equipo", f"{total_equipo:.1f} hs")
+                st.metric("Capacidad Total", f"{capacidad_base * 4:.1f} hs")
+                ocup_equipo = (total_equipo / (capacidad_base * 4) * 100)
+                st.metric("Ocupación Equipo", f"{ocup_equipo:.1f}%")
 
             st.subheader("Resumen del Equipo")
             resumen = df_melt.groupby('Operario')['Horas'].sum().reset_index()
