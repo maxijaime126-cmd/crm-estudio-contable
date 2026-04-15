@@ -181,6 +181,24 @@ def generar_pdf_reporte(tipo, nombre, mes, anio, capacidad, total_horas, porcent
     buffer.seek(0)
     return buffer.getvalue()
 
+# ===== CARGAR FERIADOS =====
+FERIADOS = []  # Arranca vacío. Cuando tengas la hoja en Sheets, descomentá el bloque de abajo
+
+# feriados_df, _ = cargar_hoja("feriados")
+# if not feriados_df.empty and 'fecha' in feriados_df.columns:
+#     for val in feriados_df['fecha'].dropna():
+#         fecha_parseada = parsear_fecha_flexible(val)
+#         if fecha_parseada:
+#             FERIADOS.append(fecha_parseada)
+
+# ===== FUNCIONES =====
+def calcular_dias_habiles(fecha_inicio, fecha_fin):
+    dias = pd.bdate_range(start=fecha_inicio, end=fecha_fin, freq='C', holidays=FERIADOS)
+    return len(dias)
+
+def calcular_capacidad_mensual(anio, mes):
+    ...
+
 # ===== FUNCIONES =====
 def calcular_dias_habiles(fecha_inicio, fecha_fin):
     dias = pd.bdate_range(start=fecha_inicio, end=fecha_fin, freq='C', holidays=FERIADOS)
