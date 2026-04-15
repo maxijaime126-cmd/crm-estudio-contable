@@ -522,21 +522,6 @@ elif menu == "Carga Masiva":
         st.info(f"Se van a crear {prev['cant_dias']} registros para **{prev['usuario']}** del {prev['dias'][0].strftime('%d/%m/%Y')} al {prev['dias'][-1].strftime('%d/%m/%Y')}")
         with st.expander("Ver primeras 5 filas de ejemplo"):
             ejemplo = pd.DataFrame({
-                'Fecha': [d.strftime('%d/%m/%Y') for d in prev['dias'][:5]],
-                'Tarea': [prev['tarea']] * min(5, prev['cant_dias']),
-                prev['usuario']: [f"{prev['horas_por_dia']:.2f}"] * min(5, prev['cant_dias']),
-                'Nota': [prev['nota']] * min(5, prev['cant_dias'])
-            })
-            st.dataframe(ejemplo, hide_index=True)
-        col_btn1, col_btn2 = st.columns(2)
-        with col_btn1:
-            if st.button("✅ Confirmar y Guardar Todo", type="primary", use_container_width=True):
-                nuevas_filas = []
-                for dia in prev['dias']:
-                    nueva_fila = {'Fecha': dia.date(), 'Tarea': prev['tarea'], 'Nota': prev['nota']}
-                    for op in OPERARIOS_FIJOS:
-                        nueva_fila[op] = round(prev['horas_por_dia'], 2) if op == prev['usuario'] else 0
-                    nuevas_filas.append(nueva_fila)
                    if 'preview_masiva' in st.session_state:
         prev = st.session_state.preview_masiva
         st.divider()
