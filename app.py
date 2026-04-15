@@ -242,7 +242,7 @@ with col_logout:
         st.rerun()
 
 if st.session_state.usuario_actual == "Admin - Ver todo":
-    menu = st.sidebar.radio("Menú", ["Panel de Control", "Cargar Horas", "Excepciones", "Exportar Excel", "Resetear Datos"])
+    menu = st.sidebar.radio("Menú", ["Panel de Control", "Cargar Horas", "Carga Masiva", "Excepciones", "Exportar Excel", "Resetear Datos"])
 else:
     menu = st.sidebar.radio("Menú", ["Panel de Control", "Cargar Mis Horas"])
 
@@ -489,6 +489,116 @@ elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
                     guardar_df("Cargas", st.session_state.cargas)
                     st.success("✅ Eliminado")
                     st.rerun()
+
+# ===== CARGA MASIVA - NUEVO =====
+elif menu == "Carga Masiva":
+    st.title("Carga Masiva de Horas")
+    st.caption("Usá esto para cargar meses completos atrasados sin volverte loco")
+
+    if st.session_state.usuario_actual!= "Admin - Ver todo":
+        st.warning("Solo el Admin puede usar carga masiva")
+        st.stop()
+
+    with st.form("form_masiva", clear_on_submit=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            usuario_masivo = st.selectbox("Operario", OPERARIOS_FIJOS)
+            fecha_inicio = st.date_input("Fecha inicio", value=datetime(2026, 2, 1), format="DD/MM/YYYY")
+        with col2:
+            tarea_masiva = st.selectbox("Tarea/Área", list(COLORES_TAREAS.keys()))
+            fecha_fin = st.date_input("Fecha fin", value=datetime(2026, 2, 28), format="DD/MM/YYYY")
+
+        st.divider()
+
+        col3, col4 = st.columns(2)
+        with col3:
+            horas_totales = st.number_input("Total de horas del período", min_value=0.0, value=0.0, step=1.0,
+                                            help="Ej: 120hs para todo febrero")
+        with col4:
+            solo_habiles = st.checkbox("Solo días hábiles (lun-vie)", value=True,
+                                       help="Tildado: reparte solo L-V. Destildado: reparte todos los días")
+
+        nota_masiva = st.text_input("Nota para todos los registros", value="Carga masiva",
+                                    placeholder="Ej: Total Febrero 2026")
+
+        submitted = st.form_submit_button("📊 Previsualizar distribución")
+
+        if submitted and horas_totales > 0 and fecha_inicio <= fecha_fin:
+            # Calcular días
+            if solo_habiles:
+                dias_lista = pd.bdate_range(start=fecha_inicio, end=fecha_fin, freq='C', holidays=FERIADOS)
+                tipo_dias = "días hábiles"
+            else:
+                dias_lista = pd.date_range(start=fecha_inicio, end=fecha_fin)
+                tipo_dias = "días totales"
+
+            cant_dias = len(dias_lista)
+            horas_por_dia = horas_totales / cant_dias if cant_dias > 0 else 0
+
+            st.session_state.preview_masiva = {
+                'dias': dias_lista,
+                'horas_por_dia': horas_por_dia,
+                'cant_dias': cant_dias,
+                'tipo_dias': tipo_dias,
+                'usuario': usuario_masivo,
+                'tarea': tarea_masiva,
+                'nota': nota_masiva
+            }
+
+    # Mostrar preview si existe
+    if 'preview_masiva' in st.session_state:
+        prev = st.session_state.preview_masiva
+        st.divider()
+        st.subheader("Previsualización")
+
+        col_m1, col_m2, col_m3 = st.columns(3)
+        with col_m1:
+            st.metric("Días a generar", f"{prev['cant_dias']} {prev['tipo_dias']}")
+        with col_m2:
+            st.metric("Horas por día", f"{prev['horas_por_dia']:.2f} hs")
+        with col_m3:
+            st.metric("Total", f"{prev['horas_por_dia'] * prev['cant_dias']:.1f} hs")
+
+        st.info(f"Se van a crear {prev['cant_dias']} registros para **{prev['usuario']}** del {prev['dias'][0].strftime('%d/%m/%Y')} al {prev['dias'][-1].strftime('%d/%m/%Y')}")
+
+        with st.expander("Ver primeras 5 filas de ejemplo"):
+            ejemplo = pd.DataFrame({
+                'Fecha': [d.strftime('%d/%m/%Y') for d in prev['dias'][:5]],
+                'Tarea': [prev['tarea']] * min(5, prev['cant_dias']),
+                prev['usuario']: [f"{prev['horas_por_dia']:.2f}"] * min(5, prev['cant_dias']),
+                'Nota': [prev['nota']] * min(5, prev['cant_dias'])
+            })
+            st.dataframe(ejemplo, hide_index=True)
+
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button("✅ Confirmar y Guardar Todo", type="primary", use_container_width=True):
+                # Crear todos los registros
+                nuevas_filas = []
+                for dia in prev['dias']:
+                    nueva_fila = {
+                        'Fecha': dia.date(),
+                        'Tarea': prev['tarea'],
+                        'Nota': prev['nota']
+                    }
+                    for op in OPERARIOS_FIJOS:
+                        nueva_fila[op] = round(prev['horas_por_dia'], 2) if op == prev['usuario'] else 0
+                    nuevas_filas.append(nueva_fila)
+
+                df_nuevo = pd.DataFrame(nuevas_filas)
+                st.session_state.cargas = pd.concat([st.session_state.cargas, df_nuevo], ignore_index=True)
+                guardar_df("Cargas", st.session_state.cargas)
+
+                st.success(f"✅ **{prev['cant_dias']} registros creados** para {prev['usuario']}. Total: {prev['horas_por_dia'] * prev['cant_dias']:.1f}hs")
+                st.balloons()
+                del st.session_state.preview_masiva
+                time.sleep(2)
+                st.rerun()
+
+        with col_btn2:
+            if st.button("❌ Cancelar", use_container_width=True):
+                del st.session_state.preview_masiva
+                st.rerun()
 
 # ===== EXCEPCIONES =====
 elif menu == "Excepciones":
