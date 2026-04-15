@@ -521,19 +521,6 @@ elif menu == "Carga Masiva":
             st.metric("Total", f"{prev['horas_por_dia'] * prev['cant_dias']:.1f} hs")
         st.info(f"Se van a crear {prev['cant_dias']} registros para **{prev['usuario']}** del {prev['dias'][0].strftime('%d/%m/%Y')} al {prev['dias'][-1].strftime('%d/%m/%Y')}")
         with st.expander("Ver primeras 5 filas de ejemplo"):
-                if 'preview_masiva' in st.session_state:
-        prev = st.session_state.preview_masiva
-        st.divider()
-        st.subheader("Previsualización")
-        col_m1, col_m2, col_m3 = st.columns(3)
-        with col_m1:
-            st.metric("Días a generar", f"{prev['cant_dias']} {prev['tipo_dias']}")
-        with col_m2:
-            st.metric("Horas por día", f"{prev['horas_por_dia']:.2f} hs")
-        with col_m3:
-            st.metric("Total", f"{prev['horas_por_dia'] * prev['cant_dias']:.1f} hs")
-        st.info(f"Se van a crear {prev['cant_dias']} registros para **{prev['usuario']}** del {prev['dias'][0].strftime('%d/%m/%Y')} al {prev['dias'][-1].strftime('%d/%m/%Y')}")
-        with st.expander("Ver primeras 5 filas de ejemplo"):
             ejemplo = pd.DataFrame({
                 'Fecha': [d.strftime('%d/%m/%Y') for d in prev['dias'][:5]],
                 'Tarea': [prev['tarea']] * min(5, prev['cant_dias']),
@@ -620,4 +607,4 @@ elif menu == "Resetear Datos":
             st.success("✅ Base limpiada. Todas las cargas fueron eliminadas.")
             st.balloons()
             st.rerun()
-           
+
