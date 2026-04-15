@@ -546,14 +546,27 @@ elif menu == "Carga Masiva":
                 time.sleep(2)
                 st.rerun()
         with col_btn2:
+                  with col_btn1:
+            if st.button("✅ Confirmar y Guardar Todo", type="primary", use_container_width=True):
+                nuevas_filas = []
+                for dia in prev['dias']:
+                    nueva_fila = {'Fecha': dia.date(), 'Tarea': prev['tarea'], 'Nota': prev['nota']}
+                    for op in OPERARIOS_FIJOS:
+                        nueva_fila[op] = round(prev['horas_por_dia'], 2) if op == prev['usuario'] else 0
+                    nuevas_filas.append(nueva_fila)
+                df_nuevo = pd.DataFrame(nuevas_filas)
+                st.session_state.cargas = pd.concat([st.session_state.cargas, df_nuevo], ignore_index=True)
+                guardar_df("Cargas", st.session_state.cargas)
+                st.success(f"✅ **{prev['cant_dias']} registros creados** para {prev['usuario']}. Total: {prev['horas_por_dia'] * prev['cant_dias']:.1f}hs")
+                st.balloons()
+                del st.session_state.preview_masiva
+                time.sleep(2)
+                st.rerun()
+        with col_btn2:
             if st.button("❌ Cancelar", use_container_width=True):
                 del st.session_state.preview_masiva
                 st.rerun()
-                        with col_btn2:
-            if st.button("❌ Cancelar", use_container_width=True):
-                del st.session_state.preview_masiva
-                st.rerun()
-                
+
 # ===== EXCEPCIONES =====
 elif menu == "Excepciones":
     st.title("Excepciones - Vacaciones/Licencias")
