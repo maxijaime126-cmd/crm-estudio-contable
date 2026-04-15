@@ -549,7 +549,11 @@ elif menu == "Carga Masiva":
             if st.button("❌ Cancelar", use_container_width=True):
                 del st.session_state.preview_masiva
                 st.rerun()
-
+                        with col_btn2:
+            if st.button("❌ Cancelar", use_container_width=True):
+                del st.session_state.preview_masiva
+                st.rerun()
+                
 # ===== EXCEPCIONES =====
 elif menu == "Excepciones":
     st.title("Excepciones - Vacaciones/Licencias")
@@ -582,4 +586,28 @@ elif menu == "Excepciones":
         st.dataframe(st.session_state.excepciones, use_container_width=True, hide_index=True)
 
 # ===== EXPORTAR EXCEL =====
-elif menu == "Exportar Excel
+elif menu == "Exportar Excel":
+    st.title("Exportar a Excel")
+    if st.session_state.cargas.empty:
+        st.warning("No hay datos para exportar")
+    else:
+        csv_cargas = st.session_state.cargas.to_csv(index=False).encode('utf-8')
+        csv_exc = st.session_state.excepciones.to_csv(index=False).encode('utf-8')
+        col1, col2 = st.columns(2)
+        col1.download_button("⬇️ Descargar Cargas.csv", csv_cargas, "cargas.csv", "text/csv")
+        col2.download_button("⬇️ Descargar Excepciones.csv", csv_exc, "excepciones.csv", "text/csv")
+
+# ===== RESETEAR DATOS - SOLO ADMIN =====
+elif menu == "Resetear Datos":
+    st.title("⚠️ Resetear Datos")
+    st.error("Esto borra TODAS las cargas del sistema. No se puede deshacer.")
+    st.info("Las cargas viejas de Natalia y Athina que viste son datos de prueba. Usá esto para empezar limpio.")
+    confirmacion = st.text_input("Escribí BORRAR para confirmar", placeholder="BORRAR")
+    if confirmacion == "BORRAR":
+        if st.button("🗑️ Borrar todas las cargas", type="primary"):
+            df_vacio = pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota'])
+            guardar_df("Cargas", df_vacio)
+            st.session_state.cargas = df_vacio
+            st.success("✅ Base limpiada. Todas las cargas fueron eliminadas.")
+            st.balloons()
+            st.rerun()
