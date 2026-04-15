@@ -70,15 +70,23 @@ def cargar_hoja(nombre_hoja):
         return pd.DataFrame(), None
 
 def guardar_df(nombre_hoja, df):
-    ws = conectar_sheets().worksheet(nombre_hoja)
-    ws.clear()
-    df_copy = df.copy()
-    for col in df_copy.columns:
-        if 'fecha' in col.lower():
-            df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.strftime('%d/%m/%Y')
-    df_copy = df_copy.fillna('').astype(str)
-    ws.update([df_copy.columns.values.tolist()] + df_copy.values.tolist())
-    st.cache_data.clear()
+    try:
+        ws = conectar_sheets().worksheet(nombre_hoja)
+        ws.clear()
+        df_copy = df.copy()
+        for col in df_copy.columns:
+            if 'fecha' in col.lower():
+                df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.strftime('%d/%m/%Y')
+        df_copy = df_copy.fillna('').astype(str)
+        if df_copy.empty:
+            ws.update([df_copy.columns.values.tolist()])
+        else:
+            ws.update([df_copy.columns.values.tolist()] + df_copy.values.tolist())
+        st.cache_data.clear()
+        return True
+    except Exception as e:
+        st.error(f"Error guardando en {nombre_hoja}: {e}")
+        return False
 
 # ===== FUNCIÓN GENERAR PDF =====
 def generar_pdf_reporte(tipo, persona, mes, anio, capacidad_base, total_horas, porcentaje, estado, df_tareas, df_resumen=None):
@@ -186,7 +194,6 @@ def calcular_capacidad_mensual(anio, mes):
     dias_habiles = calcular_dias_habiles(inicio.date(), fin.date())
     return dias_habiles, dias_habiles * HORAS_DIA_LABORAL
 
-# NUEVA FUNCIÓN: CALCULAR HORAS DE EXCEPCIONES POR OPERARIO EN EL MES
 def calcular_excepciones_mes(operario, anio, mes, df_excepciones):
     if df_excepciones.empty:
         return 0
@@ -194,19 +201,16 @@ def calcular_excepciones_mes(operario, anio, mes, df_excepciones):
     df_exc['Fecha Inicio'] = pd.to_datetime(df_exc['Fecha Inicio'], errors='coerce')
     df_exc['Fecha Fin'] = pd.to_datetime(df_exc['Fecha Fin'], errors='coerce')
     df_exc = df_exc[df_exc['Operario'] == operario]
-
     total_horas_exc = 0
     inicio_mes = datetime(anio, mes, 1).date()
     if mes == 12:
         fin_mes = datetime(anio + 1, 1, 1).date() - timedelta(days=1)
     else:
         fin_mes = datetime(anio, mes + 1, 1).date() - timedelta(days=1)
-
     for _, row in df_exc.iterrows():
         if pd.notna(row['Fecha Inicio']) and pd.notna(row['Fecha Fin']):
             inicio_exc = row['Fecha Inicio'].date()
             fin_exc = row['Fecha Fin'].date()
-            # Calcular intersección entre excepción y el mes
             inicio_efectivo = max(inicio_exc, inicio_mes)
             fin_efectivo = min(fin_exc, fin_mes)
             if inicio_efectivo <= fin_efectivo:
@@ -257,7 +261,6 @@ else:
 # ===== PANEL DE CONTROL =====
 if menu == "Panel de Control":
     st.title("Panel de Control - Capacidad Instalada")
-
     col1, col2 = st.columns(2)
     with col1:
         anio = st.selectbox("Año", [2025, 2026, 2027], index=1)
@@ -265,45 +268,34 @@ if menu == "Panel de Control":
         mes = st.selectbox("Mes", list(range(1,13)),
                            format_func=lambda x: MESES_ES[x],
                            index=3)
-
     dias_habiles, capacidad_base_mes = calcular_capacidad_mensual(anio, mes)
     st.write(f"**{MESES_ES[mes]} {anio} - {dias_habiles} días hábiles | Capacidad base del mes: {capacidad_base_mes}hs**")
-
-    # Filtrar cargas del mes seleccionado
     df_mes = st.session_state.cargas.copy()
     if not df_mes.empty:
         df_mes['Fecha'] = pd.to_datetime(df_mes['Fecha'], errors='coerce')
         mask = (df_mes['Fecha'].dt.month == mes) & (df_mes['Fecha'].dt.year == anio)
         df_mes = df_mes[mask]
-
     if df_mes.empty:
         st.info("Cargá horas para ver el gráfico")
     else:
-        # Preparar datos
         df_melt = df_mes.melt(id_vars=['Fecha', 'Tarea', 'Nota'],
                               value_vars=OPERARIOS_FIJOS,
                               var_name='Operario', value_name='Horas')
         df_melt = df_melt[df_melt['Horas'] > 0]
-
-        # ===== GRÁFICO 1: TORTA INDIVIDUAL CON FILTRO =====
         st.subheader("Ocupación Individual")
         if st.session_state.usuario_actual == "Admin - Ver todo":
             persona_seleccionada = st.selectbox("Seleccionar persona", OPERARIOS_FIJOS)
         else:
             persona_seleccionada = st.session_state.usuario_actual
             st.caption(f"Mostrando datos de: **{persona_seleccionada}**")
-
-        # CALCULAR CAPACIDAD REAL RESTANDO EXCEPCIONES
         horas_excepcion = calcular_excepciones_mes(persona_seleccionada, anio, mes, st.session_state.excepciones)
         capacidad_real_persona = capacidad_base_mes - horas_excepcion
-
         df_persona = df_melt[df_melt['Operario'] == persona_seleccionada]
         if df_persona.empty and horas_excepcion == 0:
             st.info(f"{persona_seleccionada} no tiene horas cargadas en {MESES_ES[mes]} {anio}")
         else:
             ocupacion_persona = df_persona.groupby('Tarea')['Horas'].sum().reset_index() if not df_persona.empty else pd.DataFrame({'Tarea': [], 'Horas': []})
             total_persona = ocupacion_persona['Horas'].sum() if not ocupacion_persona.empty else 0
-
             porcentaje = (total_persona / capacidad_real_persona * 100) if capacidad_real_persona > 0 else 0
             if porcentaje > 100:
                 color_semaforo = "🔴 Sobrecarga"
@@ -311,7 +303,6 @@ if menu == "Panel de Control":
                 color_semaforo = "🟡 Al límite"
             else:
                 color_semaforo = "🟢 OK"
-
             col_torta, col_detalle = st.columns([2,1])
             with col_torta:
                 if not ocupacion_persona.empty:
@@ -322,13 +313,10 @@ if menu == "Panel de Control":
                     st.plotly_chart(fig_persona, use_container_width=True)
                 else:
                     st.info("Sin horas cargadas este mes")
-
             with col_detalle:
                 st.metric("Total cargado", f"{total_persona:.1f} hs")
                 st.metric("Capacidad real", f"{capacidad_real_persona:.0f} hs", delta=f"-{horas_excepcion:.0f}hs excepción" if horas_excepcion > 0 else None)
                 st.metric("Ocupación", f"{porcentaje:.1f}%", delta=f"{color_semaforo}")
-
-                # Botón descarga PDF individual
                 pdf_individual = generar_pdf_reporte(
                     "individual", persona_seleccionada, mes, anio,
                     capacidad_real_persona, total_persona, porcentaje, color_semaforo, ocupacion_persona
@@ -339,12 +327,9 @@ if menu == "Panel de Control":
                     file_name=f"reporte_{persona_seleccionada}_{MESES_ES[mes]}_{anio}.pdf",
                     mime="application/pdf"
                 )
-
-        # ===== HISTÓRICO 3 MESES =====
         st.subheader("Histórico Últimos 3 Meses")
         df_historico = st.session_state.cargas.copy()
         df_historico['Fecha'] = pd.to_datetime(df_historico['Fecha'], errors='coerce')
-
         meses_historico = []
         for i in range(3):
             mes_calc = mes - i
@@ -353,7 +338,6 @@ if menu == "Panel de Control":
                 mes_calc += 12
                 anio_calc -= 1
             meses_historico.append((anio_calc, mes_calc))
-
         data_historico = []
         for a, m in reversed(meses_historico):
             mask = (df_historico['Fecha'].dt.month == m) & (df_historico['Fecha'].dt.year == a)
@@ -365,7 +349,6 @@ if menu == "Panel de Control":
                 'Horas': total_mes,
                 'Capacidad': cap_base - exc_mes
             })
-
         df_hist = pd.DataFrame(data_historico)
         fig_hist = go.Figure()
         fig_hist.add_trace(go.Bar(x=df_hist['Mes'], y=df_hist['Horas'], name='Horas Cargadas', marker_color='#00BFFF'))
@@ -373,16 +356,11 @@ if menu == "Panel de Control":
                                      line=dict(color='red', dash='dash')))
         fig_hist.update_layout(title=f"Evolución de {persona_seleccionada}", yaxis_title="Horas")
         st.plotly_chart(fig_hist, use_container_width=True)
-
-        # ===== GRÁFICO 2: TORTA DEL EQUIPO TOTAL - SOLO ADMIN =====
         if st.session_state.usuario_actual == "Admin - Ver todo":
             st.divider()
             st.subheader("Distribución del Equipo Total")
-
             distribucion = df_melt.groupby('Tarea')['Horas'].sum().reset_index()
             total_equipo = distribucion['Horas'].sum()
-
-            # Calcular capacidad total del equipo restando excepciones de todos
             capacidad_total_equipo = 0
             resumen_equipo = []
             for op in OPERARIOS_FIJOS:
@@ -397,7 +375,6 @@ if menu == "Panel de Control":
                     '% Ocupación': f"{(horas_op / cap_real_op * 100):.1f}%" if cap_real_op > 0 else "0%",
                     'Estado': "🔴" if horas_op / cap_real_op > 1 else "🟡" if horas_op / cap_real_op >= 0.8 else "🟢"
                 })
-
             col_torta_eq, col_detalle_eq = st.columns([2,1])
             with col_torta_eq:
                 fig_estudio = px.pie(distribucion, values='Horas', names='Tarea',
@@ -405,18 +382,14 @@ if menu == "Panel de Control":
                 fig_estudio.update_traces(textposition='inside', textinfo='percent+label')
                 fig_estudio.update_layout(title=f"Total equipo: {total_equipo:.1f}hs")
                 st.plotly_chart(fig_estudio, use_container_width=True)
-
             with col_detalle_eq:
                 st.metric("Total Equipo", f"{total_equipo:.1f} hs")
                 st.metric("Capacidad Total Real", f"{capacidad_total_equipo:.1f} hs")
                 ocup_equipo = (total_equipo / capacidad_total_equipo * 100) if capacidad_total_equipo > 0 else 0
                 st.metric("Ocupación Equipo", f"{ocup_equipo:.1f}%")
-
             st.subheader("Resumen del Equipo")
             df_resumen = pd.DataFrame(resumen_equipo)
             st.dataframe(df_resumen, use_container_width=True, hide_index=True)
-
-            # Botón descarga PDF equipo
             pdf_equipo = generar_pdf_reporte(
                 "equipo", "Equipo", mes, anio,
                 capacidad_total_equipo, total_equipo, ocup_equipo, "", distribucion, df_resumen
@@ -590,4 +563,26 @@ elif menu == "Excepciones":
             motivo = st.selectbox("Motivo", ["Vacaciones", "Licencia", "Enfermedad", "Otro"])
         if st.form_submit_button("Guardar Excepción"):
             dias = calcular_dias_habiles(fecha_inicio_exc, fecha_fin_exc)
-            horas = dias
+            horas = dias * HORAS_DIA_LABORAL
+            nuevo = pd.DataFrame([{
+                'Operario': operario, 'Fecha Inicio': fecha_inicio_exc,
+                'Fecha Fin': fecha_fin_exc, 'Motivo': motivo, 'Horas': horas
+            }])
+            st.session_state.excepciones = pd.concat([st.session_state.excepciones, nuevo], ignore_index=True)
+            if guardar_df("Excepciones", st.session_state.excepciones):
+                st.success(f"✅ Excepción guardada: {operario} - {dias} días = {horas}hs menos")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("❌ No se pudo guardar. Revisá la hoja Excepciones en Sheets.")
+    st.subheader("Excepciones Cargadas")
+    if st.session_state.excepciones.empty:
+        st.info("No hay excepciones cargadas")
+    else:
+        st.dataframe(st.session_state.excepciones, use_container_width=True, hide_index=True)
+
+# ===== EXPORTAR EXCEL =====
+elif menu == "Exportar Excel":
+    st.title("Exportar a Excel")
+    if st.session_state.cargas.empty:
+        st.warning("No
