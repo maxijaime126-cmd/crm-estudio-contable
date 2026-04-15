@@ -259,7 +259,7 @@ else:
     menu = st.sidebar.radio("Menú", ["Panel de Control", "Cargar Mis Horas"])
 
 # ===== PANEL DE CONTROL =====
-elif menu == "Panel de Control":
+if menu == "Panel de Control":
     st.title("Panel de Control - Ocupación")
 
     # Definimos qué tareas suman al "Tiempo Disponible/No Productivo"
