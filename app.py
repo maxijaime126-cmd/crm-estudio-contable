@@ -585,4 +585,4 @@ elif menu == "Excepciones":
 elif menu == "Exportar Excel":
     st.title("Exportar a Excel")
     if st.session_state.cargas.empty:
-        st.warning("No hay datos
+        st.warning("No hay datos para export
