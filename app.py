@@ -89,96 +89,97 @@ def guardar_df(nombre_hoja, df):
         return False
 
 # ===== FUNCIÓN GENERAR PDF =====
-def generar_pdf_reporte(tipo, persona, mes, anio, capacidad_base, total_horas, porcentaje, estado, df_tareas, df_resumen=None):
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib import colors
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+def generar_pdf_reporte(tipo, nombre, mes, anio, capacidad, total_horas, porcentaje, estado, df_tareas, df_equipo=None):
+    from reportlab.lib.pagesizes import letter
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-    from reportlab.lib.units import cm
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib import colors
+    from io import BytesIO
+
     buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
-    elements = []
+    doc = SimpleDocTemplate(buffer, pagesize=letter)
     styles = getSampleStyleSheet()
-    titulo_style = ParagraphStyle('CustomTitle', parent=styles['Heading1'], fontSize=18, textColor=colors.HexColor('#1a1a1a'), spaceAfter=30, alignment=1)
-    subtitulo_style = ParagraphStyle('CustomSub', parent=styles['Heading2'], fontSize=14, textColor=colors.HexColor('#333'), spaceAfter=20)
+    story = []
+
+    # Título
+    titulo = f"Reporte {tipo.title()} - {nombre}" if tipo == "individual" else f"Reporte Equipo - {MESES_ES[mes]} {anio}"
+    story.append(Paragraph(titulo, styles['Title']))
+    story.append(Spacer(1, 12))
+
+    # Resumen
     if tipo == "individual":
-        titulo = f"Reporte de Ocupación - {persona}"
+        data_resumen = [
+            ["Métrica", "Valor"],
+            ["Período", f"{MESES_ES[mes]} {anio}"],
+            ["Total Cargado", f"{total_horas:.1f} hs"],
+            ["% Tiempo Disponible", f"{porcentaje:.1f}%"],
+            ["Estado", estado],
+            ["Capacidad Real", f"{capacidad:.0f} hs"]
+        ]
     else:
-        titulo = "Reporte de Ocupación - Equipo Total"
-    elements.append(Paragraph(titulo, titulo_style))
-    elements.append(Paragraph(f"{MESES_ES[mes]} {anio}", subtitulo_style))
-    elements.append(Spacer(1, 0.5*cm))
-    data_metricas = [
-        ["Métrica", "Valor"],
-        ["Total Cargado", f"{total_horas:.1f} hs"],
-        ["Capacidad", f"{capacidad_base:.1f} hs" if tipo == "individual" else f"{capacidad_base * 4:.1f} hs"],
-        ["Ocupación", f"{porcentaje:.1f}%"],
-        ["Estado", estado]
-    ]
-    tabla_metricas = Table(data_metricas, colWidths=[8*cm, 6*cm])
-    tabla_metricas.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4A90E2')),
+        data_resumen = [
+            ["Métrica", "Valor"],
+            ["Período", f"{MESES_ES[mes]} {anio}"],
+            ["Total Equipo", f"{total_horas:.1f} hs"],
+            ["% Disponible Promedio", f"{porcentaje:.1f}%"]
+        ]
+
+    tabla_resumen = Table(data_resumen, colWidths=[200, 200])
+    tabla_resumen.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 12),
         ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
         ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
         ('GRID', (0, 0), (-1, -1), 1, colors.black)
     ]))
-    elements.append(tabla_metricas)
-    elements.append(Spacer(1, 1*cm))
-    elements.append(Paragraph("Distribución por Tareas", subtitulo_style))
-    data_tareas = [["Tarea", "Horas", "Porcentaje"]]
+    story.append(tabla_resumen)
+    story.append(Spacer(1, 20))
+
+    # Tabla de tareas
+    story.append(Paragraph("Distribución por Tarea", styles['Heading2']))
+    data_tareas = [["Tarea", "Horas"]]
     for _, row in df_tareas.iterrows():
-        porc = (row['Horas'] / total_horas * 100) if total_horas > 0 else 0
-        data_tareas.append([row['Tarea'], f"{row['Horas']:.1f}", f"{porc:.1f}%"])
-    tabla_tareas = Table(data_tareas, colWidths=[8*cm, 3*cm, 3*cm])
+        data_tareas.append([row['Tarea'], f"{row['Horas']:.1f}"])
+
+    tabla_tareas = Table(data_tareas, colWidths=[300, 100])
     tabla_tareas.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4A90E2')),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
-        ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, 0), 11),
         ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('GRID', (0, 0), (-1, -1), 1, colors.black),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
+        ('GRID', (0, 0), (-1, -1), 1, colors.black)
     ]))
-    elements.append(tabla_tareas)
-    if tipo == "equipo" and df_resumen is not None:
-        elements.append(Spacer(1, 1*cm))
-        elements.append(Paragraph("Resumen del Equipo", subtitulo_style))
-        data_resumen = [["Operario", "Horas", "Capacidad", "% Ocupación", "Estado"]]
-        for _, row in df_resumen.iterrows():
-            data_resumen.append([row['Operario'], f"{row['Horas']:.1f}", f"{row['Capacidad']:.0f}", row['% Ocupación'], row['Estado']])
-        tabla_resumen = Table(data_resumen, colWidths=[3.5*cm, 2*cm, 2.5*cm, 2.5*cm, 2*cm])
-        tabla_resumen.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#4A90E2')),
+    story.append(tabla_tareas)
+
+    # Si es reporte de equipo, agregar tabla del equipo con las columnas nuevas
+    if tipo == "equipo" and df_equipo is not None and not df_equipo.empty:
+        story.append(Spacer(1, 20))
+        story.append(Paragraph("Resumen del Equipo", styles['Heading2']))
+
+        # Usa las columnas que tenga el dataframe, sin hardcodear nombres
+        cols_equipo = list(df_equipo.columns)
+        data_equipo = [cols_equipo]
+        for _, row in df_equipo.iterrows():
+            data_equipo.append([str(row[col]) for col in cols_equipo])
+
+        tabla_equipo = Table(data_equipo)
+        tabla_equipo.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
             ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
             ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, 0), 11),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
             ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-            ('GRID', (0, 0), (-1, -1), 1, colors.black),
-            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.lightgrey])
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
         ]))
-        elements.append(tabla_resumen)
-    elements.append(Spacer(1, 2*cm))
-    footer_style = ParagraphStyle('Footer', parent=styles['Normal'], fontSize=9, textColor=colors.grey, alignment=1)
-    elements.append(Paragraph(f"Generado el {datetime.now().strftime('%d/%m/%Y %H:%M')}", footer_style))
-    doc.build(elements)
-    buffer.seek(0)
-    return buffer
+        story.append(tabla_equipo)
 
-# Cargar feriados
-feriados_df, _ = cargar_hoja("feriados")
-FERIADOS = []
-if not feriados_df.empty and 'fecha' in feriados_df.columns:
-    for val in feriados_df['fecha'].dropna():
-        fecha_parseada = parsear_fecha_flexible(val)
-        if fecha_parseada:
-            FERIADOS.append(fecha_parseada)
+    doc.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 # ===== FUNCIONES =====
 def calcular_dias_habiles(fecha_inicio, fecha_fin):
