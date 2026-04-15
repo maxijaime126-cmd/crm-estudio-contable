@@ -39,7 +39,7 @@ DIAS_SEMANA_ES = {
     4: "Viernes", 5: "Sábado", 6: "Domingo"
 }
 
-# ===== FUNCIÓN PARA PARSEAR FECHAS - BLINDADA =====
+# ===== FUNCIÓN PARA PARSEAR FECHAS =====
 def parsear_fecha_flexible(valor):
     """Lee fechas en cualquier formato y devuelve date. Acepta 1/1/2026, 01/01/2026, 2026-01-01"""
     if pd.isna(valor) or str(valor).strip() == '':
@@ -179,8 +179,8 @@ def generar_pdf_reporte(tipo, persona, mes, anio, capacidad_base, total_horas, p
     buffer.seek(0)
     return buffer
 
-# Cargar feriados - VERSIÓN BLINDADA
-feriados_df, _ = cargar_hoja("Feriados")
+# Cargar feriados - HOJA EN MINÚSCULA
+feriados_df, _ = cargar_hoja("feriados")
 FERIADOS = []
 if not feriados_df.empty and 'fecha' in feriados_df.columns:
     for val in feriados_df['fecha'].dropna():
