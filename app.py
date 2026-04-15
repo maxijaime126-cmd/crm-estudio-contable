@@ -576,4 +576,10 @@ elif menu == "Excepciones":
             else:
                 st.error("❌ No se pudo guardar. Revisá la hoja Excepciones en Sheets.")
     st.subheader("Excepciones Cargadas")
-    if st.session_state.exce
+    if st.session_state.excepciones.empty:
+        st.info("No hay excepciones cargadas")
+    else:
+        st.dataframe(st.session_state.excepciones, use_container_width=True, hide_index=True)
+
+# ===== EXPORTAR EXCEL =====
+elif menu == "Exportar Excel
