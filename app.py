@@ -39,21 +39,15 @@ DIAS_SEMANA_ES = {
     4: "Viernes", 5: "Sábado", 6: "Domingo"
 }
 
-# ===== FUNCIÓN PARA PARSEAR FECHAS DE AMBOS FORMATOS =====
+# ===== FUNCIÓN PARA PARSEAR FECHAS - MEJORADA =====
 def parsear_fecha_flexible(valor):
-    """Lee fechas en formato DD/MM/YYYY o YYYY-MM-DD y devuelve date"""
-    if pd.isna(valor) or valor == '':
+    """Lee fechas en cualquier formato y devuelve date. Acepta 1/1/2026 o 01/01/2026"""
+    if pd.isna(valor) or str(valor).strip() == '':
         return None
     try:
-        return pd.to_datetime(valor, format='%d/%m/%Y', errors='raise').date()
+        return pd.to_datetime(str(valor).strip(), dayfirst=True, errors='raise').date()
     except:
-        try:
-            return pd.to_datetime(valor, format='%Y-%m-%d', errors='raise').date()
-        except:
-            try:
-                return pd.to_datetime(valor, dayfirst=True, errors='raise').date()
-            except:
-                return None
+        return None
 
 # ===== CONEXIÓN GOOGLE SHEETS =====
 @st.cache_resource
@@ -189,6 +183,7 @@ def generar_pdf_reporte(tipo, persona, mes, anio, capacidad_base, total_horas, p
 feriados_df, _ = cargar_hoja("Feriados")
 if not feriados_df.empty and 'fecha' in feriados_df.columns:
     FERIADOS = feriados_df['fecha'].dropna().tolist()
+    FERIADOS = [f for f in FERIADOS if f is not None]
 else:
     FERIADOS = []
 
@@ -513,7 +508,7 @@ elif menu == "Carga Masiva":
         col3, col4 = st.columns(2)
         with col3:
             horas_totales = st.number_input("Total de horas del período", min_value=0.0, value=0.0, step=1.0,
-                                            help="Ej: 120hs para todo febrero")
+                                            help="Ej: 108hs para todo febrero")
         with col4:
             solo_habiles = st.checkbox("Solo días hábiles (lun-vie)", value=True,
                                        help="Tildado: reparte solo L-V. Destildado: reparte todos los días")
