@@ -521,8 +521,7 @@ elif menu == "Carga Masiva":
             st.metric("Total", f"{prev['horas_por_dia'] * prev['cant_dias']:.1f} hs")
         st.info(f"Se van a crear {prev['cant_dias']} registros para **{prev['usuario']}** del {prev['dias'][0].strftime('%d/%m/%Y')} al {prev['dias'][-1].strftime('%d/%m/%Y')}")
         with st.expander("Ver primeras 5 filas de ejemplo"):
-            ejemplo = pd.DataFrame({
-                   if 'preview_masiva' in st.session_state:
+                if 'preview_masiva' in st.session_state:
         prev = st.session_state.preview_masiva
         st.divider()
         st.subheader("Previsualización")
@@ -621,3 +620,4 @@ elif menu == "Resetear Datos":
             st.success("✅ Base limpiada. Todas las cargas fueron eliminadas.")
             st.balloons()
             st.rerun()
+           
