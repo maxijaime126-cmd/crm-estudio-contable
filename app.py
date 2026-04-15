@@ -579,10 +579,4 @@ elif menu == "Excepciones":
     if st.session_state.excepciones.empty:
         st.info("No hay excepciones cargadas")
     else:
-        st.dataframe(st.session_state.excepciones, use_container_width=True, hide_index=True)
-
-# ===== EXPORTAR EXCEL =====
-elif menu == "Exportar Excel":
-    st.title("Exportar a Excel")
-    if st.session_state.cargas.empty:
-        st.warning("No
+        st.dataframe
