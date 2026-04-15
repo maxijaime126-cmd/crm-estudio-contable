@@ -537,16 +537,28 @@ elif menu == "Carga Masiva":
                     for op in OPERARIOS_FIJOS:
                         nueva_fila[op] = round(prev['horas_por_dia'], 2) if op == prev['usuario'] else 0
                     nuevas_filas.append(nueva_fila)
-                df_nuevo = pd.DataFrame(nuevas_filas)
-                st.session_state.cargas = pd.concat([st.session_state.cargas, df_nuevo], ignore_index=True)
-                guardar_df("Cargas", st.session_state.cargas)
-                st.success(f"✅ **{prev['cant_dias']} registros creados** para {prev['usuario']}. Total: {prev['horas_por_dia'] * prev['cant_dias']:.1f}hs")
-                st.balloons()
-                del st.session_state.preview_masiva
-                time.sleep(2)
-                st.rerun()
-        with col_btn2:
-                  with col_btn1:
+                   if 'preview_masiva' in st.session_state:
+        prev = st.session_state.preview_masiva
+        st.divider()
+        st.subheader("Previsualización")
+        col_m1, col_m2, col_m3 = st.columns(3)
+        with col_m1:
+            st.metric("Días a generar", f"{prev['cant_dias']} {prev['tipo_dias']}")
+        with col_m2:
+            st.metric("Horas por día", f"{prev['horas_por_dia']:.2f} hs")
+        with col_m3:
+            st.metric("Total", f"{prev['horas_por_dia'] * prev['cant_dias']:.1f} hs")
+        st.info(f"Se van a crear {prev['cant_dias']} registros para **{prev['usuario']}** del {prev['dias'][0].strftime('%d/%m/%Y')} al {prev['dias'][-1].strftime('%d/%m/%Y')}")
+        with st.expander("Ver primeras 5 filas de ejemplo"):
+            ejemplo = pd.DataFrame({
+                'Fecha': [d.strftime('%d/%m/%Y') for d in prev['dias'][:5]],
+                'Tarea': [prev['tarea']] * min(5, prev['cant_dias']),
+                prev['usuario']: [f"{prev['horas_por_dia']:.2f}"] * min(5, prev['cant_dias']),
+                'Nota': [prev['nota']] * min(5, prev['cant_dias'])
+            })
+            st.dataframe(ejemplo, hide_index=True)
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
             if st.button("✅ Confirmar y Guardar Todo", type="primary", use_container_width=True):
                 nuevas_filas = []
                 for dia in prev['dias']:
