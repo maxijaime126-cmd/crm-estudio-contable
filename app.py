@@ -25,13 +25,15 @@ TAREAS_DISPONIBLE_TIPO = ["DISPONIBLE", "PLANIFICACIONES/ORGANIZACIÓN/PROCEDIMI
 MESES_ES = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
             7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
 
-# ===== 2. FUNCIONES PDF (CON COLOR CELESTE Y GRÁFICOS) =====
+# ===== 2. FUNCIONES PDF CORREGIDAS =====
 
 def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
     from reportlab.lib.pagesizes import letter
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Drawing
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib import colors
+    # Corrección del Import de Drawing y Pie
+    from reportlab.graphics.shapes import Drawing
     from reportlab.graphics.charts.piecharts import Pie
 
     buf = BytesIO()
@@ -59,7 +61,7 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
         pc.width = 120
         pc.height = 120
         pc.data = list(incluir_grafico.values())
-        pc.labels = list(incluir_grafico.keys())
+        pc.labels = [f"{k} ({v}h)" for k, v in incluir_grafico.items()]
         for i in range(len(pc.data)):
             pc.slices[i].fillColor = colors.skyblue
         d.add(pc)
@@ -155,8 +157,6 @@ if "Panel de Control" in menu:
     for i in range(3):
         m_c = mes - i; a_c = anio
         if m_c <= 0: m_c += 12; a_c -= 1
-        ini = datetime(a_c, m_c, 1).date(); fin = (datetime(a_c, m_c+1, 1) if m_c < 12 else datetime(a_c+1, 1, 1)).date() - timedelta(days=1)
-        cap = len(pd.bdate_range(start=ini, end=fin, freq='C', holidays=FERIADOS)) * HORAS_DIA_LABORAL
         df_m = df_p[(df_p['Fecha'].dt.month == m_c) & (df_p['Fecha'].dt.year == a_c)]
         total = round(df_m[p_sel].sum(), 1)
         comp_list.append({"Mes": MESES_ES[m_c], "Total": f"{total} hs"})
@@ -166,7 +166,6 @@ if "Panel de Control" in menu:
     st.table(pd.DataFrame(comp_list))
     
     if st.button("📥 Descargar Autoevaluación Trimestral (PDF)"):
-        # Armar tabla para el PDF con desvío por tarea
         tareas_u = sorted(list(set([t for m in hist_pdf for t in hist_pdf[m].keys()])))
         meses_n = list(hist_pdf.keys())
         data_t = [["Tarea"] + meses_n]
@@ -174,7 +173,6 @@ if "Panel de Control" in menu:
             fila = [t]
             for m in meses_n: fila.append(f"{hist_pdf[m].get(t, 0):.1f}")
             data_t.append(fila)
-        
         pdf_t = generar_pdf_base(f"Autoevaluación Trimestral: {p_sel}", "Comparativa de horas por mes", [("Desvío por Tarea", data_t)])
         st.download_button("Guardar Trimestral", pdf_t, f"Trimestral_{p_sel}.pdf")
 
@@ -189,7 +187,7 @@ if "Panel de Control" in menu:
     with col_met:
         if st.button("📥 Reporte Mensual Individual (PDF)"):
             dict_pie = res_ind.set_index('Tarea')[p_sel].to_dict()
-            pdf_m = generar_pdf_base(f"Reporte Mensual: {p_sel}", f"Período: {MESES_ES[mes]} {anio}", [("Detalle de Tareas", [["Tarea", "Horas"]]+res_ind.values.tolist())], incluir_grafico=dict_pie)
+            pdf_m = generar_pdf_base(f"Reporte Mensual: {p_sel}", f"Período: {MESES_ES[mes]} {anio}", [("Detalle", [["Tarea", "Horas"]]+res_ind.values.tolist())], incluir_grafico=dict_pie)
             st.download_button("Guardar Mensual", pdf_m, f"Mensual_{p_sel}.pdf")
 
     if st.session_state.usuario_actual == "Admin - Ver todo":
@@ -198,7 +196,7 @@ if "Panel de Control" in menu:
         df_eq = df_act.melt(id_vars=['Fecha', 'Tarea'], value_vars=OPERARIOS_FIJOS, var_name='Op', value_name='Hs')
         res_eq = df_eq.groupby('Tarea')['Hs'].sum().reset_index()
         st.plotly_chart(px.pie(res_eq, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title="Total Horas Estudio"), use_container_width=True)
-        if st.button("📥 Descargar Reporte Global de Equipo (PDF)"):
+        if st.button("📥 Descargar Reporte Global (PDF)"):
             dict_global = res_eq.set_index('Tarea')['Hs'].to_dict()
             pdf_g = generar_pdf_base("Reporte Global de Equipo", f"Estudio Completo - {MESES_ES[mes]}", [("Totales", [["Tarea", "Horas"]]+res_eq.values.tolist())], incluir_grafico=dict_global)
             st.download_button("Guardar Global", pdf_g, "Reporte_Global.pdf")
@@ -245,7 +243,7 @@ elif "Protocolo" in menu:
     st.title("📜 Protocolo: Grupo Pressacco")
     st.info("Elegimos sumar")
     if st.button("📥 Descargar Protocolo (PDF)"):
-        pdf_p = generar_pdf_base("Protocolo de Trabajo", "Pautas para el uso del sistema", [("Reglas", [["Concepto", "Detalle"], ["Identidad", "Cargar siempre en usuario propio"], ["Horario", "Cargar antes de las 15 hs"], ["Total", "6 hs diarias"]])])
+        pdf_p = generar_pdf_base("Protocolo de Trabajo", "Pautas para el uso del sistema", [("Reglas", [["Concepto", "Detalle"], ["Identidad", "Usuario propio"], ["Horario", "Cargar antes 15hs"], ["Total", "6hs diarias"]])])
         st.download_button("Guardar Protocolo", pdf_p, "Protocolo.pdf")
 
 elif "Reset" in menu:
