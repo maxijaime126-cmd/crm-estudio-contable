@@ -142,23 +142,20 @@ if 'cargas' not in st.session_state:
 if 'usuario_actual' not in st.session_state:
     st.session_state.usuario_actual = None
 
-# ===== 4. LÓGICA DE ALERTA DE CARGA =====
+# ===== 4. LÓGICA DE ALERTA =====
 def mostrar_alerta_faltante(usuario):
     if usuario == "Admin - Ver todo": return
     hoy = datetime.now()
     inicio_mes = datetime(hoy.year, hoy.month, 1).date()
     fin_mes = hoy.date()
-    # Calcular días hábiles hasta hoy
     dias_habiles = len(pd.bdate_range(start=inicio_mes, end=fin_mes, freq='C', holidays=FERIADOS))
     horas_objetivo = dias_habiles * HORAS_DIA_LABORAL
-    
     df_u = st.session_state.cargas.copy()
     df_u['Fecha'] = pd.to_datetime(df_u['Fecha'], errors='coerce')
     horas_cargadas = df_u[(df_u['Fecha'].dt.month == hoy.month) & (df_u['Fecha'].dt.year == hoy.year)][usuario].sum()
-    
     if horas_cargadas < horas_objetivo:
         faltan = round(horas_objetivo - horas_cargadas, 1)
-        st.warning(f"⚠️ **Aviso de Carga:** Hola {usuario}, te faltan cargar **{faltan} horas** para completar lo correspondiente al mes de {MESES_ES[hoy.month]} hasta hoy.")
+        st.warning(f"⚠️ **Aviso de Carga:** Hola {usuario}, te faltan cargar **{faltan} horas** para completar el mes de {MESES_ES[hoy.month]} hasta hoy.")
 
 # ===== 5. LOGIN =====
 if st.session_state.usuario_actual is None:
@@ -172,7 +169,6 @@ if st.session_state.usuario_actual is None:
 # ===== 6. NAVEGACIÓN =====
 opciones = ["📊 Panel de Control", "➕ Cargar Horas", "📁 Carga Masiva", "📜 Protocolo", "⚙️ Reset"] if st.session_state.usuario_actual == "Admin - Ver todo" else ["📊 Panel de Control", "➕ Cargar Mis Horas", "📜 Protocolo"]
 menu = st.sidebar.radio("Navegación", opciones)
-
 if st.sidebar.button("Cerrar Sesión"):
     st.session_state.clear(); st.rerun()
 
@@ -244,7 +240,6 @@ if "Panel de Control" in menu:
             if m_c <= 0: m_c += 12; a_c -= 1
             df_m_g = df_p[(df_p['Fecha'].dt.month == m_c) & (df_p['Fecha'].dt.year == a_c)]
             hist_global[MESES_ES[m_c]] = df_m_g[OPERARIOS_FIJOS].sum(axis=1).groupby(df_m_g['Tarea']).sum().to_dict()
-        
         tareas_g = sorted(list(set([t for m in hist_global for t in hist_global[m].keys()])))
         meses_g = list(hist_global.keys())
         header_g = ["Tarea"] + meses_g
@@ -257,12 +252,11 @@ if "Panel de Control" in menu:
             rows_g.append(fila)
         rows_g.append(["TOTAL"] + [round(x, 1) for x in totales_g])
         st.table(pd.DataFrame(rows_g[1:], columns=header_g))
-        
         if st.button("📥 Descargar Reporte Global Trimestral (PDF)"):
             pdf_g = generar_pdf_base("Reporte Global Trimestral", "Estudio Completo", [("Totales Equipo", [header_g] + rows_g)])
             st.download_button("Guardar Global", pdf_g, "Global_Trimestral.pdf")
 
-# ===== 8. CARGAR HORAS E HISTORIAL =====
+# ===== 8. CARGAR HORAS E HISTORIAL FILTRADO =====
 elif "Cargar" in menu:
     st.title("➕ Registro de Horas")
     u_c = st.session_state.usuario_actual if st.session_state.usuario_actual != "Admin - Ver todo" else st.selectbox("Persona:", OPERARIOS_FIJOS)
@@ -280,23 +274,27 @@ elif "Cargar" in menu:
             st.success("¡Guardado!"); time.sleep(1); st.rerun()
 
     st.divider()
-    st.subheader("📋 Historial y Resumen")
+    st.subheader("📋 Historial y Resumen (Solo Mes Actual)")
     df_h = st.session_state.cargas.copy(); df_h['Fecha'] = pd.to_datetime(df_h['Fecha'], errors='coerce')
-    df_h = df_h[df_h[u_c] > 0]
+    mes_hoy = datetime.now().month
+    anio_hoy = datetime.now().year
     
-    if not df_h.empty:
-        df_m = df_h[df_h['Fecha'].dt.month == datetime.now().month]
-        if not df_m.empty:
-            st.write(f"**Resumen de Tareas - {MESES_ES[datetime.now().month]}**")
-            st.dataframe(df_m.groupby('Tarea')[u_c].sum().round(1).reset_index(), use_container_width=True, hide_index=True)
+    # Filtrar historial: solo usuario actual y solo mes actual
+    df_filtrado = df_h[(df_h[u_c] > 0) & (df_h['Fecha'].dt.month == mes_hoy) & (df_h['Fecha'].dt.year == anio_hoy)]
+    
+    if not df_filtrado.empty:
+        st.write(f"**Resumen de Tareas - {MESES_ES[mes_hoy]}**")
+        st.dataframe(df_filtrado.groupby('Tarea')[u_c].sum().round(1).reset_index(), use_container_width=True, hide_index=True)
         
-        st.write("**Últimos Registros:**")
-        for i, row in df_h.sort_values('Fecha', ascending=False).head(10).iterrows():
+        st.write("**Registros del Mes:**")
+        for i, row in df_filtrado.sort_values('Fecha', ascending=False).iterrows():
             c1, c2 = st.columns([6, 1])
-            c1.write(f"📅 {row['Fecha'].strftime('%d/%m/%Y')} | {row['Tarea']} | {row[u_c]} hs")
+            c1.write(f"📅 {row['Fecha'].strftime('%d/%m/%Y')} | {row['Tarea']} | {round(row[u_c], 1)} hs | {row['Nota']}")
             if c2.button("Eliminar", key=f"del_{i}"):
                 st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True)
                 guardar_df("Cargas", st.session_state.cargas); st.rerun()
+    else:
+        st.info(f"No hay registros cargados para {MESES_ES[mes_hoy]}.")
 
 # (Secciones Masiva, Protocolo y Reset)
 elif "Carga Masiva" in menu:
