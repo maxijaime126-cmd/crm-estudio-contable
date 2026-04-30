@@ -9,10 +9,10 @@ from io import BytesIO
 import time
 import os
 
-# ===== CONFIGURACIÓN DE PÁGINA =====
+# ===== 1. CONFIGURACIÓN DE PÁGINA =====
 st.set_page_config(page_title="CRM Capacidad Instalada", layout="wide")
 
-# ===== CONFIGURACIÓN DE NEGOCIO =====
+# ===== 2. CONFIGURACIÓN DE NEGOCIO =====
 COLORES_TAREAS = {
     "DOCUMENTACIÓN CARGA": "#FFB6C1",
     "DOCUMENTACIÓN CONTROL": "#FF69B4",
@@ -46,21 +46,24 @@ DIAS_SEMANA_ES = {
     4: "Viernes", 5: "Sábado", 6: "Domingo"
 }
 
-# ===== CARGA DE FERIADOS DESDE GITHUB (CSV) =====
+# ===== 3. CARGA DE FERIADOS DESDE GITHUB (AJUSTADO A TU FORMATO) =====
 @st.cache_data
 def cargar_feriados_desde_csv():
     try:
-        # Intenta leer tu archivo local[cite: 1]
+        # Lee el archivo feriados_2026.csv que tenés en Git[cite: 1]
         df_f = pd.read_csv("feriados_2026.csv")
-        df_f['fecha'] = pd.to_datetime(df_f['fecha'], dayfirst=True)
-        return df_f['fecha'].dt.date.tolist()
+        df_f.columns = df_f.columns.str.strip().str.lower()
+        if 'fecha' in df_f.columns:
+            # Se eliminó dayfirst=True porque tu CSV usa AAAA-MM-DD[cite: 1]
+            df_f['fecha'] = pd.to_datetime(df_f['fecha'], errors='coerce')
+            return df_f['fecha'].dt.date.dropna().tolist()
+        return []
     except Exception as e:
-        st.sidebar.warning("No se encontró feriados_2026.csv, usando lista vacía.")
         return []
 
 FERIADOS = cargar_feriados_desde_csv()
 
-# ===== CONEXIÓN GOOGLE SHEETS =====
+# ===== 4. CONEXIÓN GOOGLE SHEETS =====
 @st.cache_resource
 def conectar_sheets():
     scopes = ["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"]
@@ -97,9 +100,9 @@ def guardar_df(nombre_hoja, df):
         st.error(f"Error guardando en {nombre_hoja}: {e}")
         return False
 
-# ===== FUNCIONES DE CAPACIDAD =====
+# ===== 5. FUNCIONES DE CAPACIDAD =====
 def calcular_dias_habiles(fecha_inicio, fecha_fin):
-    # Usa la lista FERIADOS cargada del CSV[cite: 1]
+    # Usa la lista de FERIADOS cargada para calcular la capacidad real[cite: 1]
     dias = pd.bdate_range(start=fecha_inicio, end=fecha_fin, freq='C', holidays=FERIADOS)
     return len(dias)
 
@@ -130,7 +133,7 @@ def calcular_excepciones_mes(operario, anio, mes, df_excepciones):
                 total_hs_exc += dias_e * HORAS_DIA_LABORAL
     return total_hs_exc
 
-# ===== SESSION STATE =====
+# ===== 6. SESSION STATE =====
 if 'cargas' not in st.session_state:
     df, _ = cargar_hoja("Cargas")
     if df.empty:
@@ -146,7 +149,7 @@ if 'excepciones' not in st.session_state:
 if 'usuario_actual' not in st.session_state:
     st.session_state.usuario_actual = None
 
-# ===== LOGIN =====
+# ===== 7. LOGIN =====
 if st.session_state.usuario_actual is None:
     st.title("CRM Capacidad Instalada - Estudio")
     usuario = st.selectbox("Usuario:", ["Seleccionar..."] + OPERARIOS_FIJOS + ["Admin - Ver todo"])
@@ -155,7 +158,7 @@ if st.session_state.usuario_actual is None:
         st.rerun()
     st.stop()
 
-# ===== SIDEBAR =====
+# ===== 8. SIDEBAR =====
 st.sidebar.success(f"Usuario: **{st.session_state.usuario_actual}**")
 if st.sidebar.button("Cerrar Sesión"):
     st.session_state.clear()
@@ -166,7 +169,7 @@ if st.session_state.usuario_actual == "Admin - Ver todo":
 else:
     menu = st.sidebar.radio("Menú", ["Panel de Control", "Cargar Mis Horas"])
 
-# ===== PANEL DE CONTROL =====
+# ===== 9. PANEL DE CONTROL =====
 if menu == "Panel de Control":
     st.title("Panel de Control - Ocupación")
     
@@ -175,7 +178,7 @@ if menu == "Panel de Control":
     with col_m: mes = st.selectbox("Mes", list(range(1,13)), format_func=lambda x: MESES_ES[x], index=datetime.now().month - 1)
 
     dias_habiles, cap_base = calcular_capacidad_mensual(anio, mes)
-    st.info(f"**{MESES_ES[mes]} {anio}**: {dias_habiles} días hábiles (L-V sin feriados). Capacidad: {cap_base}hs[cite: 1]")
+    st.info(f"**{MESES_ES[mes]} {anio}**: {dias_habiles} días laborales. Capacidad: {cap_base}hs (Jornada de 6hs)[cite: 1]")
 
     df_pnl = st.session_state.cargas.copy()
     if not df_pnl.empty:
@@ -183,79 +186,92 @@ if menu == "Panel de Control":
         df_pnl = df_pnl[(df_pnl['Fecha'].dt.month == mes) & (df_pnl['Fecha'].dt.year == anio)]
 
     if df_pnl.empty:
-        st.warning("No hay datos para este mes.")
+        st.warning("No hay registros de horas para este mes.")
     else:
-        # Redondeo crítico para evitar el error de los decimales (.1)[cite: 1]
         df_melt = df_pnl.melt(id_vars=['Fecha', 'Tarea', 'Nota'], value_vars=OPERARIOS_FIJOS, var_name='Operario', value_name='Horas')
         df_melt['Horas'] = pd.to_numeric(df_melt['Horas'], errors='coerce').fillna(0).round(2)
         df_melt = df_melt[df_melt['Horas'] > 0]
 
-        persona_sel = st.selectbox("Seleccionar persona:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
+        persona_sel = st.selectbox("Ver datos de:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
         
         hs_exc = calcular_excepciones_mes(persona_sel, anio, mes, st.session_state.excepciones)
         cap_real = cap_base - hs_exc
         df_ind = df_melt[df_melt['Operario'] == persona_sel]
         
+        # AGREGADO: Redondeo crítico para evitar el error de los decimales (.1)[cite: 1]
         resumen_t = df_ind.groupby('Tarea')['Horas'].sum().round(1).reset_index()
         total_c = resumen_t['Horas'].sum().round(1)
         
-        # Lógica de Disponibilidad e Inversión de Semáforo[cite: 1]
         hs_libres = df_ind[df_ind['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)]['Horas'].sum().round(1)
         porc_libres = (hs_libres / total_c * 100) if total_c > 0 else 0
 
+        # NUEVA LÓGICA: Inversión de Semáforo (Más disponibilidad es mejor)[cite: 1]
         if porc_libres > 20:
-            estado_semaforo = "🟢 OK"
+            color_s = "🟢 OK"
             msg = "Disponibilidad alta (>20%)[cite: 1]"
         elif porc_libres >= 10:
-            estado_semaforo = "🟡 Atención"
+            color_s = "🟡 Atención"
             msg = "Capacidad moderada (10-20%)[cite: 1]"
         else:
-            estado_semaforo = "🔴 Al límite"
-            msg = "Sobrecarga detectada (<10% libre)[cite: 1]"
+            color_s = "🔴 Al límite"
+            msg = "Sobrecarga detectada (<10% disponible)[cite: 1]"
 
-        c_graf, c_metr = st.columns([2,1])
-        with c_graf:
+        col_pie, col_metrics = st.columns([2,1])
+        with col_pie:
             fig = px.pie(resumen_t, values='Horas', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS)
-            fig.update_layout(title=f"Ocupación: {persona_sel} ({total_c} hs)")
+            fig.update_traces(textinfo='percent+label')
+            fig.update_layout(title=f"Ocupación de {persona_sel} ({total_c} hs)")
             st.plotly_chart(fig, use_container_width=True)
         
-        with c_metr:
+        with col_metrics:
             st.metric("Total Cargado", f"{total_c} hs")
             st.metric("Capacidad Real", f"{cap_real} hs", delta=f"-{hs_exc}hs excepcion" if hs_exc > 0 else None)
             st.metric("Tiempo Disponible", f"{hs_libres} hs", delta=f"{porc_libres:.1f}%")
-            st.subheader(f"Estado: {estado_semaforo}")
+            st.subheader(f"Estado: {color_s}")
             st.caption(msg)
 
-# ===== CARGAR HORAS =====
+# ===== 10. CARGAR HORAS =====
 elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
-    st.title("Cargar Horas")
-    user_c = st.selectbox("Persona:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
+    st.title("Registro de Actividad")
+    quien = st.selectbox("Operario:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
     
-    with st.form("form_c", clear_on_submit=True):
+    with st.form("form_registro", clear_on_submit=True):
         f_fecha = st.date_input("Fecha", value=datetime.now())
-        f_tarea = st.selectbox("Tarea", list(COLORES_TAREAS.keys()))
-        f_horas = st.number_input("Horas", min_value=0.0, step=0.5)
-        f_nota = st.text_area("Nota")
+        f_tarea = st.selectbox("Área de Trabajo", list(COLORES_TAREAS.keys()))
+        f_horas = st.number_input("Horas (Ej: 1.5)", min_value=0.0, step=0.5)
+        f_nota = st.text_area("Detalle (opcional)")
+        
         if st.form_submit_button("Guardar"):
             if f_horas > 0:
-                # Se guarda redondeado para evitar errores de precisión[cite: 1]
-                nueva = {'Fecha': f_fecha, 'Tarea': f_tarea, 'Nota': f_nota}
-                for op in OPERARIOS_FIJOS: nueva[op] = round(f_horas, 2) if op == user_c else 0
-                st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame([nueva])], ignore_index=True)
-                guardar_df("Cargas", st.session_state.cargas)
-                st.success("Guardado.")
-                st.rerun()
+                fila = {'Fecha': f_fecha, 'Tarea': f_tarea, 'Nota': f_nota}
+                for op in OPERARIOS_FIJOS: fila[op] = round(f_horas, 2) if op == quien else 0
+                st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame([fila])], ignore_index=True)
+                if guardar_df("Cargas", st.session_state.cargas):
+                    st.success(f"Guardado correctamente para {quien}.")
+                    time.sleep(1)
+                    st.rerun()
 
-# (Secciones de Carga Masiva y Excepciones simplificadas para este bloque)
+# ===== 11. EXCEPCIONES Y RESET (RESTO DEL CÓDIGO) =====
 elif menu == "Excepciones":
-    st.title("Excepciones")
-    # Mantiene tu lógica pero usando el cálculo de días hábiles corregido[cite: 1]
-    ...
+    st.title("Gestión de Licencias y Vacaciones")
+    with st.form("form_exc", clear_on_submit=True):
+        e_op = st.selectbox("Operario", OPERARIOS_FIJOS)
+        e_ini = st.date_input("Desde")
+        e_fin = st.date_input("Hasta")
+        e_mot = st.selectbox("Motivo", ["Vacaciones", "Licencia Médica", "Examen", "Otro"])
+        if st.form_submit_button("Registrar"):
+            d_e = calcular_dias_habiles(e_ini, e_fin)
+            h_e = d_e * HORAS_DIA_LABORAL
+            nueva_e = pd.DataFrame([{'Operario': e_op, 'Fecha Inicio': e_ini, 'Fecha Fin': e_fin, 'Motivo': e_mot, 'Horas': h_e}])
+            st.session_state.excepciones = pd.concat([st.session_state.excepciones, nueva_e], ignore_index=True)
+            guardar_df("Excepciones", st.session_state.excepciones)
+            st.success("Excepción guardada.")
+            st.rerun()
 
 elif menu == "Resetear Datos":
-    st.title("⚠️ Resetear Datos")
-    if st.text_input("Escriba 'BORRAR'") == "BORRAR":
-        if st.button("Borrar todo"):
+    st.title("⚠️ Zona de Peligro")
+    if st.text_input("Escriba 'BORRAR' para confirmar") == "BORRAR":
+        if st.button("Eliminar todos los registros"):
             df_v = pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota'])
             guardar_df("Cargas", df_v)
             st.session_state.cargas = df_v
