@@ -39,6 +39,11 @@ MESES_ES = {
     7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
 }
 
+DIAS_SEMANA_ES = {
+    0: "Lunes", 1: "Martes", 2: "Miércoles", 3: "Jueves",
+    4: "Viernes", 5: "Sábado", 6: "Domingo"
+}
+
 # ===== 2. FERIADOS (CSV) =====
 @st.cache_data
 def cargar_feriados():
@@ -144,18 +149,18 @@ if menu == "Panel de Control":
         
         # --- SECCIÓN INDIVIDUAL ---
         p_sel = st.selectbox("Operario:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
-        df_ind = df_m.melt(id_vars=['Fecha', 'Tarea'], value_vars=[p_sel], var_name='Op', value_name='Hs')
-        df_ind = df_ind[df_ind['Hs'] > 0]
+        df_ind_melt = df_m.melt(id_vars=['Fecha', 'Tarea'], value_vars=[p_sel], var_name='Op', value_name='Hs')
+        df_ind_melt = df_ind_melt[df_ind_melt['Hs'] > 0]
         
-        res_t = df_ind.groupby('Tarea')['Hs'].sum().round(1).reset_index()
+        res_t = df_ind_melt.groupby('Tarea')['Hs'].sum().round(1).reset_index()
         total_c = res_t['Hs'].sum().round(1)
-        hs_p = df_ind[~df_ind['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)]['Hs'].sum()
+        hs_p = df_ind_melt[~df_ind_melt['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)]['Hs'].sum()
         eficiencia = (hs_p / cap_base * 100) if cap_base > 0 else 0
-        hs_l = df_ind[df_ind['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)]['Hs'].sum()
+        hs_l = df_ind_melt[df_ind_melt['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)]['Hs'].sum()
         porc_l = (hs_l / total_c * 100) if total_c > 0 else 0
         
-        if porc_l >= 20: est = "🟢 OK"
-        elif porc_l >= 10: est = "🟡 Atención"
+        if porc_l >= 20.0: est = "🟢 OK"
+        elif porc_l >= 10.0: est = "🟡 Atención"
         else: est = "🔴 Al límite"
 
         col_g, col_m = st.columns([2,1])
@@ -191,7 +196,6 @@ if menu == "Panel de Control":
             df_eq = df_m.melt(id_vars=['Fecha', 'Tarea'], value_vars=OPERARIOS_FIJOS, var_name='Op', value_name='Hs')
             res_eq = df_eq.groupby('Tarea')['Hs'].sum().round(1).reset_index()
             st.plotly_chart(px.pie(res_eq, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title="Distribución Total Equipo"), use_container_width=True)
-            # Tabla comparativa
             res_ops = []
             for o in OPERARIOS_FIJOS:
                 res_ops.append({'Operario': o, 'Total Hs': df_m[o].sum().round(1)})
@@ -212,7 +216,7 @@ elif menu == "Carga Masiva":
                 h_d = round(h_t / len(dias), 2)
                 filas = []
                 for d in dias:
-                    f = {'Fecha': d, 'Tarea': t_m}
+                    f = {'Fecha': d, 'Tarea': t_m, 'Nota': 'Carga Masiva'}
                     for o in OPERARIOS_FIJOS: f[o] = h_d if o == u_m else 0
                     filas.append(f)
                 st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame(filas)], ignore_index=True)
@@ -220,24 +224,53 @@ elif menu == "Carga Masiva":
                 st.success("Carga masiva completada")
                 st.rerun()
 
-# ===== 10. CARGAR HORAS =====
+# ===== 10. CARGAR HORAS Y REGISTROS =====
 elif "Cargar" in menu:
     st.title("Cargar Horas")
     u_c = st.selectbox("Persona:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
+    
     with st.form("f_ind"):
         f_f = st.date_input("Fecha", value=datetime.now())
         f_t = st.selectbox("Tarea", list(COLORES_TAREAS.keys()))
         f_h = st.number_input("Horas", step=0.5)
+        f_n = st.text_input("Nota")
         if st.form_submit_button("Guardar"):
-            nueva = {'Fecha': f_f, 'Tarea': f_t}
+            nueva = {'Fecha': f_f, 'Tarea': f_t, 'Nota': f_n}
             for op in OPERARIOS_FIJOS: nueva[op] = f_h if op == u_c else 0
             st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame([nueva])], ignore_index=True)
             guardar_df("Cargas", st.session_state.cargas)
             st.success("Guardado")
             st.rerun()
 
+    st.divider()
+    st.subheader(f"Historial de Cargas para {u_c}")
+    ver_solo_dia = st.checkbox("Ver solo el día seleccionado arriba")
+    
+    df_hist = st.session_state.cargas.copy()
+    df_hist['Fecha'] = pd.to_datetime(df_hist['Fecha'], errors='coerce')
+    df_hist = df_hist[df_hist[u_c] > 0]
+    
+    if ver_solo_dia:
+        df_hist = df_hist[df_hist['Fecha'].dt.date == f_f]
+    
+    df_hist = df_hist.sort_values('Fecha', ascending=False)
+    
+    if df_hist.empty:
+        st.info("No hay registros cargados.")
+    else:
+        for i, row in df_hist.iterrows():
+            with st.container():
+                col_info, col_del = st.columns([5, 1])
+                fecha_str = row['Fecha'].strftime('%d/%m/%Y')
+                dia_sem = DIAS_SEMANA_ES[row['Fecha'].weekday()]
+                col_info.write(f"**{fecha_str} ({dia_sem})** - {row['Tarea']}: **{row[u_c]} hs** | *{row.get('Nota', '')}*")
+                if col_del.button("Eliminar", key=f"del_{i}"):
+                    st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True)
+                    guardar_df("Cargas", st.session_state.cargas)
+                    st.rerun()
+
 elif menu == "Resetear Datos":
     if st.text_input("Escriba BORRAR") == "BORRAR":
         if st.button("Eliminar Todo"):
-            guardar_df("Cargas", pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS))
+            guardar_df("Cargas", pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota']))
             st.rerun()
