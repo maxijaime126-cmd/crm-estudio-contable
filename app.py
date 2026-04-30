@@ -33,7 +33,55 @@ TAREAS_DISPONIBLE_TIPO = ["DISPONIBLE", "PLANIFICACIONES/ORGANIZACIÓN/PROCEDIMI
 MESES_ES = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
             7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
 
-# ===== 2. FUNCIONES PDF =====
+# ===== 2. FUNCIONES PDF (REPORTE MENSUAL Y TRIMESTRAL) =====
+
+def generar_pdf_trimestral(nombre, comp_data, historial_tareas):
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib import colors
+    
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter)
+    s = getSampleStyleSheet()
+    
+    story = [
+        Paragraph("GRUPO PRESSACCO", s['Title']),
+        Paragraph(f"Autoevaluación Trimestral: {nombre}", s['Heading1']),
+        Spacer(1, 15),
+    ]
+    
+    # Tabla Comparativa General
+    story.append(Paragraph("Resumen de Métricas Principales", s['Heading2']))
+    data_gen = [["Mes", "Carga Total", "Eficiencia", "Disponible"]]
+    for item in comp_data:
+        data_gen.append([item['Mes'], item['Total'], item['Eficiencia'], item['Disponible']])
+    
+    tg = Table(data_gen, colWidths=[120, 100, 100, 100])
+    tg.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.grey), ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke), ('GRID',(0,0),(-1,-1),1,colors.black)]))
+    story.append(tg)
+    story.append(Spacer(1, 20))
+    
+    # Tabla Comparativa de Tareas (Desvío de horas)
+    story.append(Paragraph("Evolución de Horas por Tarea", s['Heading2']))
+    tareas_unicas = sorted(list(set([t for m in historial_tareas for t in historial_tareas[m].keys()])))
+    meses_nombres = list(historial_tareas.keys())
+    
+    data_tareas = [["Tarea"] + meses_nombres]
+    for tarea in tareas_unicas:
+        fila = [tarea]
+        for m in meses_nombres:
+            fila.append(f"{historial_tareas[m].get(tarea, 0):.1f} hs")
+        data_tareas.append(fila)
+        
+    tt = Table(data_tareas, colWidths=[200, 80, 80, 80])
+    tt.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.lightgrey), ('GRID',(0,0),(-1,-1),1,colors.black), ('FONTSIZE',(0,0),(-1,-1), 8)]))
+    story.append(tt)
+    
+    doc.build(story)
+    buf.seek(0)
+    return buf
+
 def generar_pdf_reporte_completo(nombre, mes, anio, total_hs, eficiencia, estado, df_resumen):
     from reportlab.lib.pagesizes import letter
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
@@ -44,7 +92,7 @@ def generar_pdf_reporte_completo(nombre, mes, anio, total_hs, eficiencia, estado
     s = getSampleStyleSheet()
     story = [
         Paragraph("GRUPO PRESSACCO", s['Title']),
-        Paragraph(f"Reporte de Desempeño: {nombre}", s['Heading1']),
+        Paragraph(f"Reporte Mensual: {nombre}", s['Heading1']),
         Paragraph(f"Período: {MESES_ES[mes]} {anio}", s['Normal']),
         Spacer(1, 15),
     ]
@@ -64,30 +112,8 @@ def generar_pdf_reporte_completo(nombre, mes, anio, total_hs, eficiencia, estado
     buf.seek(0)
     return buf
 
-def generar_pdf_protocolo():
-    from reportlab.lib.pagesizes import letter
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListFlowable, ListItem
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.lib.enums import TA_CENTER
-    buf = BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=letter)
-    s = getSampleStyleSheet()
-    style_lema = getSampleStyleSheet()['Normal']
-    style_lema.alignment = TA_CENTER
-    style_lema.fontName = 'Helvetica-Oblique'
-    story = [
-        Paragraph("GRUPO PRESSACCO", s['Title']),
-        Paragraph("<i>Elegimos sumar</i>", style_lema),
-        Spacer(1, 20),
-        Paragraph("Protocolo de Trabajo del Sistema", s['Heading1']),
-        Spacer(1, 12),
-        Paragraph("Cada integrante debe cargar sus horas diariamente antes de las 15:00 hs. El total debe sumar 6 horas.", s['Normal']),
-    ]
-    doc.build(story)
-    buf.seek(0)
-    return buf
-
 # ===== 3. CONEXIÓN Y DATOS =====
+
 @st.cache_resource
 def conectar():
     creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"])
@@ -126,6 +152,7 @@ def cargar_feriados():
 FERIADOS = cargar_feriados()
 
 # ===== 4. INICIO APP =====
+
 if 'cargas' not in st.session_state:
     df, _ = cargar_hoja("Cargas")
     st.session_state.cargas = df if not df.empty else pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota'])
@@ -142,6 +169,7 @@ if st.session_state.usuario_actual is None:
     st.stop()
 
 # ===== 5. MENÚ SIDEBAR =====
+
 opciones = ["Panel de Control", "Cargar Horas", "Carga Masiva", "Protocolo de Trabajo", "Resetear Datos"] if st.session_state.usuario_actual == "Admin - Ver todo" else ["Panel de Control", "Cargar Mis Horas", "Protocolo de Trabajo"]
 menu = st.sidebar.radio("Menú", opciones)
 
@@ -150,6 +178,7 @@ if st.sidebar.button("Cerrar Sesión"):
     st.rerun()
 
 # ===== 6. PANEL DE CONTROL =====
+
 if menu == "Panel de Control":
     st.title("Análisis y Autoevaluación")
     c1, c2 = st.columns(2)
@@ -160,26 +189,42 @@ if menu == "Panel de Control":
     df_p = st.session_state.cargas.copy()
     df_p['Fecha'] = pd.to_datetime(df_p['Fecha'], errors='coerce')
 
-    # Cuadro Comparativo Trimestral
+    # Cuadro Comparativo Trimestral y Captura para PDF
     st.subheader(f"Comparativa Trimestral - {p_sel}")
     comp_list = []
+    historial_tareas_pdf = {} # Guardamos para el PDF
+    
     for i in range(3):
         m_c = mes - i
         a_c = anio
         if m_c <= 0: m_c += 12; a_c -= 1
+        
         ini = datetime(a_c, m_c, 1).date()
         fin = (datetime(a_c, m_c+1, 1) if m_c < 12 else datetime(a_c+1, 1, 1)).date() - timedelta(days=1)
         cap = len(pd.bdate_range(start=ini, end=fin, freq='C', holidays=FERIADOS)) * HORAS_DIA_LABORAL
+        
         df_m = df_p[(df_p['Fecha'].dt.month == m_c) & (df_p['Fecha'].dt.year == a_c)]
         total = round(df_m[p_sel].sum(), 1)
         h_prod = df_m[~df_m['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)][p_sel].sum()
         h_disp = df_m[df_m['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)][p_sel].sum()
         efic = (h_prod / cap * 100) if cap > 0 else 0
         dispon = (h_disp / total * 100) if total > 0 else 0
-        comp_list.append({"Mes": MESES_ES[m_c], "Total": f"{total} hs", "Eficiencia": f"{efic:.1f}%", "Disponible": f"{dispon:.1f}%"})
+        
+        nombre_mes = MESES_ES[m_c]
+        comp_list.append({"Mes": nombre_mes, "Total": f"{total} hs", "Eficiencia": f"{efic:.1f}%", "Disponible": f"{dispon:.1f}%"})
+        
+        # Detalle de tareas para el PDF
+        historial_tareas_pdf[nombre_mes] = df_m.groupby('Tarea')[p_sel].sum().to_dict()
+    
     st.table(pd.DataFrame(comp_list))
+    
+    if st.button("📥 Generar Autoevaluación Trimestral (PDF)"):
+        pdf_tri = generar_pdf_trimestral(p_sel, comp_list, historial_tareas_pdf)
+        st.download_button("Descargar PDF Trimestral", pdf_tri, f"Autoevaluacion_Trimestral_{p_sel}.pdf")
 
-    # Detalle Individual
+    st.divider()
+
+    # Detalle Individual del Mes Actual
     df_actual = df_p[(df_p['Fecha'].dt.month == mes) & (df_p['Fecha'].dt.year == anio)]
     res_t = df_actual.groupby('Tarea')[p_sel].sum().round(1).reset_index()
     res_t.columns = ['Tarea', 'Hs']
@@ -187,15 +232,15 @@ if menu == "Panel de Control":
     
     col_g, col_m = st.columns([2,1])
     with col_g:
-        st.plotly_chart(px.pie(res_t, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title=f"Ocupación {p_sel}"), use_container_width=True)
+        st.plotly_chart(px.pie(res_t, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title=f"Ocupación {p_sel} ({MESES_ES[mes]})"), use_container_width=True)
     with col_m:
-        st.metric("Eficiencia Actual", comp_list[0]["Eficiencia"])
-        st.metric("Disponible Actual", comp_list[0]["Disponible"])
-        if st.button("Generar Reporte PDF"):
-            pdf = generar_pdf_reporte_completo(p_sel, mes, anio, df_actual[p_sel].sum(), float(comp_list[0]["Eficiencia"].replace('%','')), "Analizado", res_t)
-            st.download_button("Guardar PDF", pdf, f"Reporte_{p_sel}.pdf")
+        st.metric("Eficiencia Mes", comp_list[0]["Eficiencia"])
+        st.metric("Disponible Mes", comp_list[0]["Disponible"])
+        if st.button("Generar Reporte Mensual PDF"):
+            pdf_mensual = generar_pdf_reporte_completo(p_sel, mes, anio, df_actual[p_sel].sum(), float(comp_list[0]["Eficiencia"].replace('%','')), "Analizado", res_t)
+            st.download_button("Descargar Reporte Mensual", pdf_mensual, f"Reporte_{p_sel}_{MESES_ES[mes]}.pdf")
 
-    # --- NUEVA SECCIÓN: EQUIPO TOTAL (SOLO ADMIN) ---
+    # --- EQUIPO TOTAL (SOLO ADMIN) ---
     if st.session_state.usuario_actual == "Admin - Ver todo":
         st.divider()
         st.subheader("Visión General del Equipo (Estudio Completo)")
@@ -213,6 +258,7 @@ if menu == "Panel de Control":
             st.table(pd.DataFrame(res_ops))
 
 # ===== 7. CARGA DE HORAS =====
+
 elif "Cargar" in menu:
     st.title("Registro de Horas")
     u_c = st.session_state.usuario_actual if st.session_state.usuario_actual != "Admin - Ver todo" else st.selectbox("Persona:", OPERARIOS_FIJOS)
@@ -242,6 +288,7 @@ elif "Cargar" in menu:
                 guardar_df("Cargas", st.session_state.cargas); st.rerun()
 
 # ===== 8. CARGA MASIVA =====
+
 elif menu == "Carga Masiva":
     st.title("Carga Masiva (Admin)")
     with st.form("f_masiva"):
@@ -262,7 +309,27 @@ elif menu == "Carga Masiva":
 elif menu == "Protocolo de Trabajo":
     st.title("📖 Protocolo: Grupo Pressacco")
     st.info("Elegimos sumar")
-    st.download_button("Descargar Protocolo PDF", data=generar_pdf_protocolo(), file_name="Protocolo_Pressacco.pdf")
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListFlowable, ListItem
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.enums import TA_CENTER
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter)
+    s = getSampleStyleSheet()
+    style_lema = getSampleStyleSheet()['Normal']
+    style_lema.alignment = TA_CENTER
+    style_lema.fontName = 'Helvetica-Oblique'
+    story = [
+        Paragraph("GRUPO PRESSACCO", s['Title']),
+        Paragraph("<i>Elegimos sumar</i>", style_lema),
+        Spacer(1, 20),
+        Paragraph("Protocolo de Trabajo del Sistema", s['Heading1']),
+        Spacer(1, 12),
+        Paragraph("Cada integrante debe cargar sus horas diariamente antes de las 15:00 hs. El total debe sumar 6 horas.", s['Normal']),
+    ]
+    doc.build(story)
+    buf.seek(0)
+    st.download_button("Descargar Protocolo PDF", data=buf, file_name="Protocolo_Pressacco.pdf")
 
 elif menu == "Resetear Datos":
     if st.text_input("Escriba BORRAR") == "BORRAR":
