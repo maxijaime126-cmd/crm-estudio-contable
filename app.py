@@ -33,7 +33,6 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib import colors
     from reportlab.graphics.charts.piecharts import Pie
-    from reportlab.graphics.shapes import Rect
 
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter)
@@ -42,7 +41,6 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
     # Color Celeste Pressacco
     color_celeste = colors.Color(0, 0.48, 0.73) 
     
-    # Estilo Titulo Celeste
     estilo_titulo = s['Title']
     estilo_titulo.textColor = color_celeste
 
@@ -53,7 +51,6 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
         Spacer(1, 15)
     ]
 
-    # Insertar Gráfico de Torta si existe
     if incluir_grafico is not None:
         d = Drawing(400, 200)
         pc = Pie()
@@ -63,8 +60,7 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
         pc.height = 120
         pc.data = list(incluir_grafico.values())
         pc.labels = list(incluir_grafico.keys())
-        # Asignar colores (aproximados a los del sistema)
-        for i, color in enumerate(pc.data):
+        for i in range(len(pc.data)):
             pc.slices[i].fillColor = colors.skyblue
         d.add(pc)
         story.append(d)
@@ -87,7 +83,7 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
     buf.seek(0)
     return buf
 
-# ===== 3. LÓGICA DE DATOS Y APP =====
+# ===== 3. CONEXIÓN Y DATOS =====
 
 @st.cache_resource
 def conectar():
@@ -155,7 +151,6 @@ if "Panel de Control" in menu:
 
     df_p = st.session_state.cargas.copy(); df_p['Fecha'] = pd.to_datetime(df_p['Fecha'], errors='coerce')
     
-    # Datos para Trimestral
     comp_list = []; hist_pdf = {}
     for i in range(3):
         m_c = mes - i; a_c = anio
@@ -164,14 +159,23 @@ if "Panel de Control" in menu:
         cap = len(pd.bdate_range(start=ini, end=fin, freq='C', holidays=FERIADOS)) * HORAS_DIA_LABORAL
         df_m = df_p[(df_p['Fecha'].dt.month == m_c) & (df_p['Fecha'].dt.year == a_c)]
         total = round(df_m[p_sel].sum(), 1)
-        h_prod = df_m[~df_m['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)][p_sel].sum()
-        comp_list.append({"Mes": MESES_ES[m_c], "Total": f"{total} hs", "Eficiencia": f"{(h_prod/cap*100 if cap>0 else 0):.1f}%"})
+        comp_list.append({"Mes": MESES_ES[m_c], "Total": f"{total} hs"})
         hist_pdf[MESES_ES[m_c]] = df_m.groupby('Tarea')[p_sel].sum().to_dict()
 
     st.subheader(f"📈 Comparativa Trimestral - {p_sel}")
     st.table(pd.DataFrame(comp_list))
+    
     if st.button("📥 Descargar Autoevaluación Trimestral (PDF)"):
-        pdf_t = generar_pdf_base(f"Autoevaluación Trimestral: {p_sel}", "Evolución últimos 3 meses", [("Resumen", [["Mes", "Total"]]+[[x['Mes'], x['Total']] for x in comp_list])])
+        # Armar tabla para el PDF con desvío por tarea
+        tareas_u = sorted(list(set([t for m in hist_pdf for t in hist_pdf[m].keys()])))
+        meses_n = list(hist_pdf.keys())
+        data_t = [["Tarea"] + meses_n]
+        for t in tareas_u:
+            fila = [t]
+            for m in meses_n: fila.append(f"{hist_pdf[m].get(t, 0):.1f}")
+            data_t.append(fila)
+        
+        pdf_t = generar_pdf_base(f"Autoevaluación Trimestral: {p_sel}", "Comparativa de horas por mes", [("Desvío por Tarea", data_t)])
         st.download_button("Guardar Trimestral", pdf_t, f"Trimestral_{p_sel}.pdf")
 
     st.divider()
@@ -193,12 +197,11 @@ if "Panel de Control" in menu:
         st.subheader("🌐 Visión Global del Estudio")
         df_eq = df_act.melt(id_vars=['Fecha', 'Tarea'], value_vars=OPERARIOS_FIJOS, var_name='Op', value_name='Hs')
         res_eq = df_eq.groupby('Tarea')['Hs'].sum().reset_index()
-        
         st.plotly_chart(px.pie(res_eq, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title="Total Horas Estudio"), use_container_width=True)
         if st.button("📥 Descargar Reporte Global de Equipo (PDF)"):
             dict_global = res_eq.set_index('Tarea')['Hs'].to_dict()
-            pdf_g = generar_pdf_base("Reporte Global de Equipo", f"Estudio Completo - {MESES_ES[mes]}", [("Totales por Tarea", [["Tarea", "Suma Horas"]]+res_eq.values.tolist())], incluir_grafico=dict_global)
-            st.download_button("Guardar Reporte Global", pdf_g, "Reporte_Global_Equipo.pdf")
+            pdf_g = generar_pdf_base("Reporte Global de Equipo", f"Estudio Completo - {MESES_ES[mes]}", [("Totales", [["Tarea", "Horas"]]+res_eq.values.tolist())], incluir_grafico=dict_global)
+            st.download_button("Guardar Global", pdf_g, "Reporte_Global.pdf")
 
 elif "Cargar" in menu:
     st.title("➕ Registro de Horas")
@@ -241,17 +244,10 @@ elif "Carga Masiva" in menu:
 elif "Protocolo" in menu:
     st.title("📜 Protocolo: Grupo Pressacco")
     st.info("Elegimos sumar")
-    st.markdown("""
-    ### Reglas de Oro
-    1. **Identidad:** Seleccione siempre su propio nombre.[cite: 1]
-    2. **Carga Diaria:** Complete sus 6 horas antes de las 15:00 hs.[cite: 1]
-    3. **Sinceridad:** Si no tiene tareas, use **DISPONIBLE**.[cite: 1]
-    """)
     if st.button("📥 Descargar Protocolo (PDF)"):
-        pdf_p = generar_pdf_base("Protocolo de Trabajo", "Elegimos sumar", [("Pautas Generales", [["Regla", "Detalle"], ["Horario", "Antes de las 15:00 hs"], ["Carga", "6 horas diarias"]])])
-        st.download_button("Guardar Protocolo", pdf_p, "Protocolo_Pressacco.pdf")
+        pdf_p = generar_pdf_base("Protocolo de Trabajo", "Pautas para el uso del sistema", [("Reglas", [["Concepto", "Detalle"], ["Identidad", "Cargar siempre en usuario propio"], ["Horario", "Cargar antes de las 15 hs"], ["Total", "6 hs diarias"]])])
+        st.download_button("Guardar Protocolo", pdf_p, "Protocolo.pdf")
 
 elif "Reset" in menu:
     if st.text_input("Escriba BORRAR") == "BORRAR":
         if st.button("Eliminar Todo"): guardar_df("Cargas", pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota'])); st.rerun()
-```[cite: 1, 2]
