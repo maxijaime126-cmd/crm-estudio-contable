@@ -25,7 +25,7 @@ TAREAS_DISPONIBLE_TIPO = ["DISPONIBLE", "PLANIFICACIONES/ORGANIZACIÓN/PROCEDIMI
 MESES_ES = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
             7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
 
-# ===== 2. FUNCIONES PDF (MEJORADAS PARA GRÁFICO TIPO IMAGEN) =====
+# ===== 2. FUNCIONES PDF (CON COLORES MULTIPLES) =====
 
 def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
     from reportlab.lib.pagesizes import letter
@@ -54,7 +54,6 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
         Spacer(1, 15)
     ]
 
-    # Gráfico de Torta con Leyenda a la Derecha
     if incluir_grafico:
         d = Drawing(450, 200)
         pc = Pie()
@@ -63,24 +62,28 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
         pc.width = 130
         pc.height = 130
         
-        # Datos y Porcentajes
+        # Lista de colores vibrantes para el PDF
+        lista_colores = [colors.magenta, colors.deepskyblue, colors.lightpink, colors.yellow, 
+                         colors.whitesmoke, colors.lightblue, colors.lavender, colors.bisque, 
+                         colors.turquoise, colors.lime, colors.hotpink]
+
         total = sum(incluir_grafico.values())
         pc.data = [round(float(v), 1) for v in incluir_grafico.values()]
         pc.labels = [f"{round((v/total)*100, 1)}%" for v in incluir_grafico.values()]
-        pc.sideLabels = 0 # Etiquetas adentro
+        pc.sideLabels = 0 
         
-        # Colores
+        # Asignar colores variados a cada porción
         for i in range(len(pc.data)):
-            pc.slices[i].fillColor = colors.skyblue # Color base agradable
+            pc.slices[i].fillColor = lista_colores[i % len(lista_colores)]
             
-        # Leyenda lateral
         leg = Legend()
         leg.x = 220
-        leg.y = 140
+        leg.y = 150
         leg.alignment = 'right'
-        leg.columnMaximum = 10
+        leg.columnMaximum = 12
         leg.fontSize = 7
-        leg.colorNamePairs = [(colors.skyblue, k) for k in incluir_grafico.keys()]
+        # Leyenda con el color correspondiente
+        leg.colorNamePairs = [(lista_colores[i % len(lista_colores)], k) for i, k in enumerate(incluir_grafico.keys())]
         
         d.add(pc)
         d.add(leg)
@@ -108,7 +111,7 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
     buf.seek(0)
     return buf
 
-# ===== 3. RESTO DEL CÓDIGO (CONEXIÓN Y SECCIONES) =====
+# ===== 3. CONEXIÓN Y DATOS =====
 
 @st.cache_resource
 def conectar():
@@ -172,7 +175,7 @@ if "Panel de Control" in menu:
     c1, c2, c3 = st.columns([1,1,2])
     with c1: anio = st.selectbox("Año", [2025, 2026, 2027], index=1)
     with c2: mes = st.selectbox("Mes", list(range(1,13)), format_func=lambda x: MESES_ES[x], index=datetime.now().month-1)
-    with c3: p_sel = st.selectbox("Integrante:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
+    with c3: p_sel = st.selectbox("Integrante Individual:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
 
     df_p = st.session_state.cargas.copy(); df_p['Fecha'] = pd.to_datetime(df_p['Fecha'], errors='coerce')
     
@@ -213,7 +216,7 @@ if "Panel de Control" in menu:
 
     if st.session_state.usuario_actual == "Admin - Ver todo":
         st.divider()
-        st.subheader("🌐 Visión Global")
+        st.subheader("🌐 Visión Global del Estudio")
         df_eq = df_act.melt(id_vars=['Fecha', 'Tarea'], value_vars=OPERARIOS_FIJOS, var_name='Op', value_name='Hs')
         res_eq = df_eq.groupby('Tarea')['Hs'].sum().reset_index()
         st.plotly_chart(px.pie(res_eq, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title="Total Horas Estudio"), use_container_width=True)
@@ -223,7 +226,6 @@ if "Panel de Control" in menu:
             pdf_g = generar_pdf_base("Reporte Global de Equipo", f"Estudio Completo - {MESES_ES[mes]}", [("Totales", datos_g)], incluir_grafico=dict_g)
             st.download_button("Guardar Global", pdf_g, "Reporte_Global.pdf")
 
-# (Secciones Cargar Horas, Carga Masiva y Protocolo se mantienen estables)
 elif "Cargar" in menu:
     st.title("➕ Registro de Horas")
     u_c = st.session_state.usuario_actual if st.session_state.usuario_actual != "Admin - Ver todo" else st.selectbox("Persona:", OPERARIOS_FIJOS)
@@ -234,3 +236,14 @@ elif "Cargar" in menu:
             for op in OPERARIOS_FIJOS: nueva[op] = f_h if op == u_c else 0
             st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame([nueva])], ignore_index=True)
             guardar_df("Cargas", st.session_state.cargas); st.success("¡Guardado!"); time.sleep(1); st.rerun()
+
+    st.divider(); df_r = st.session_state.cargas.copy(); df_r['Fecha'] = pd.to_datetime(df_r['Fecha'], errors='coerce')
+    df_r = df_r[df_r[u_c] > 0]
+    if not df_r.empty:
+        df_r['Mes_N'] = df_r['Fecha'].dt.month; df_r['Año'] = df_r['Fecha'].dt.year; df_r['Mes'] = df_r['Mes_N'].map(MESES_ES)
+        st.dataframe(df_r.groupby(['Año', 'Mes_N', 'Mes', 'Tarea'])[u_c].sum().round(1).reset_index().sort_values(by=['Año', 'Mes_N'], ascending=False)[['Año', 'Mes', 'Tarea', u_c]], use_container_width=True, hide_index=True)
+        for i, row in df_r.sort_values('Fecha', ascending=False).iterrows():
+            c_i, c_d = st.columns([5,1]); c_i.write(f"**{row['Fecha'].strftime('%d/%m/%Y')}** - {row['Tarea']}: {row[u_c]:.1f} hs")
+            if c_d.button("Eliminar", key=f"del_{i}"):
+                st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True)
+                guardar_df("Cargas", st.session_state.cargas); st.rerun()
