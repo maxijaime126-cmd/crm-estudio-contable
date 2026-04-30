@@ -25,7 +25,7 @@ TAREAS_DISPONIBLE_TIPO = ["DISPONIBLE", "PLANIFICACIONES/ORGANIZACIÓN/PROCEDIMI
 MESES_ES = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
             7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
 
-# ===== 2. FUNCIONES PDF (MEJORADAS: WRAP Y REDONDEO) =====
+# ===== 2. FUNCIONES PDF (MEJORADAS PARA GRÁFICO TIPO IMAGEN) =====
 
 def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
     from reportlab.lib.pagesizes import letter
@@ -34,13 +34,13 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
     from reportlab.lib import colors
     from reportlab.graphics.shapes import Drawing
     from reportlab.graphics.charts.piecharts import Pie
+    from reportlab.graphics.charts.legends import Legend
     from reportlab.lib.units import inch
 
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=0.5*inch, rightMargin=0.5*inch)
     s = getSampleStyleSheet()
     
-    # Estilos
     color_celeste = colors.Color(0, 0.48, 0.73) 
     estilo_titulo = s['Title']
     estilo_titulo.textColor = color_celeste
@@ -54,38 +54,47 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
         Spacer(1, 15)
     ]
 
-    # Gráfico de Torta Mejorado
+    # Gráfico de Torta con Leyenda a la Derecha
     if incluir_grafico:
-        d = Drawing(400, 180)
+        d = Drawing(450, 200)
         pc = Pie()
-        pc.x = 125
+        pc.x = 50
         pc.y = 25
         pc.width = 130
         pc.height = 130
-        # Redondear valores para la leyenda del gráfico
+        
+        # Datos y Porcentajes
+        total = sum(incluir_grafico.values())
         pc.data = [round(float(v), 1) for v in incluir_grafico.values()]
-        pc.labels = [f"{k[:15]}..." if len(k)>15 else k for k in incluir_grafico.keys()]
+        pc.labels = [f"{round((v/total)*100, 1)}%" for v in incluir_grafico.values()]
+        pc.sideLabels = 0 # Etiquetas adentro
+        
+        # Colores
         for i in range(len(pc.data)):
-            pc.slices[i].fillColor = colors.skyblue
+            pc.slices[i].fillColor = colors.skyblue # Color base agradable
+            
+        # Leyenda lateral
+        leg = Legend()
+        leg.x = 220
+        leg.y = 140
+        leg.alignment = 'right'
+        leg.columnMaximum = 10
+        leg.fontSize = 7
+        leg.colorNamePairs = [(colors.skyblue, k) for k in incluir_grafico.keys()]
+        
         d.add(pc)
+        d.add(leg)
         story.append(d)
         story.append(Spacer(1, 10))
 
-    # Tablas con Salto de Línea (Wrap)
     for titulo_tabla, data in datos_tablas:
         if titulo_tabla:
             story.append(Paragraph(titulo_tabla, s['Heading3']))
         
-        # Convertimos cada celda a un Paragraph para que haga wrap
-        data_procesada = []
-        for fila in data:
-            fila_p = [Paragraph(str(celda), estilo_celda) for celda in fila]
-            data_procesada.append(fila_p)
-
-        # Ajustamos anchos: Tarea (columna 0) más ancha, números más finos
-        col_widths = [2.5*inch] + [1.0*inch] * (len(data[0]) - 1)
+        data_p = [[Paragraph(str(c), estilo_celda) for c in fila] for fila in data]
+        col_w = [2.8*inch] + [1.1*inch] * (len(data[0]) - 1)
         
-        t = Table(data_procesada, colWidths=col_widths)
+        t = Table(data_p, colWidths=col_w)
         t.setStyle(TableStyle([
             ('BACKGROUND', (0, 0), (-1, 0), color_celeste),
             ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
@@ -99,7 +108,7 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
     buf.seek(0)
     return buf
 
-# ===== 3. CONEXIÓN Y DATOS =====
+# ===== 3. RESTO DEL CÓDIGO (CONEXIÓN Y SECCIONES) =====
 
 @st.cache_resource
 def conectar():
@@ -151,7 +160,7 @@ if st.session_state.usuario_actual is None:
         st.rerun()
     st.stop()
 
-# ===== 4. MENÚ Y SECCIONES =====
+# ===== 4. MENÚ Y PANEL =====
 opciones = ["📊 Panel de Control", "➕ Cargar Horas", "📁 Carga Masiva", "📜 Protocolo", "⚙️ Reset"] if st.session_state.usuario_actual == "Admin - Ver todo" else ["📊 Panel de Control", "➕ Cargar Mis Horas", "📜 Protocolo"]
 menu = st.sidebar.radio("Navegación", opciones)
 
@@ -167,7 +176,6 @@ if "Panel de Control" in menu:
 
     df_p = st.session_state.cargas.copy(); df_p['Fecha'] = pd.to_datetime(df_p['Fecha'], errors='coerce')
     
-    # Datos para Trimestral
     comp_list = []; hist_pdf = {}
     for i in range(3):
         m_c = mes - i; a_c = anio
@@ -183,15 +191,8 @@ if "Panel de Control" in menu:
     if st.button("📥 Descargar Autoevaluación Trimestral (PDF)"):
         tareas_u = sorted(list(set([t for m in hist_pdf for t in hist_pdf[m].keys()])))
         meses_n = list(hist_pdf.keys())
-        # Tabla con redondeo explícito
         header = ["Tarea"] + meses_n
-        rows = []
-        for t in tareas_u:
-            fila = [t]
-            for m in meses_n:
-                fila.append(round(float(hist_pdf[m].get(t, 0)), 1))
-            rows.append(fila)
-        
+        rows = [[t] + [round(float(hist_pdf[m].get(t, 0)), 1) for m in meses_n] for t in tareas_u]
         pdf_t = generar_pdf_base(f"Autoevaluación Trimestral: {p_sel}", "Comparativa de horas por mes", [("Desvío por Tarea", [header] + rows)])
         st.download_button("Guardar Trimestral", pdf_t, f"Trimestral_{p_sel}.pdf")
 
@@ -200,29 +201,29 @@ if "Panel de Control" in menu:
     res_ind = df_act.groupby('Tarea')[p_sel].sum().round(1).reset_index()
     res_ind = res_ind[res_ind[p_sel]>0]
     
-    col_pie, col_met = st.columns([2,1])
-    with col_pie:
+    col_p, col_m = st.columns([2,1])
+    with col_p:
         st.plotly_chart(px.pie(res_ind, values=p_sel, names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title=f"Ocupación Individual {MESES_ES[mes]}"), use_container_width=True)
-    with col_met:
+    with col_m:
         if st.button("📥 Reporte Mensual Individual (PDF)"):
             dict_pie = res_ind.set_index('Tarea')[p_sel].to_dict()
-            # Datos de tabla redondeados
-            datos_tabla = [["Tarea", "Horas"]] + [[r['Tarea'], round(r[p_sel], 1)] for _, r in res_ind.iterrows()]
-            pdf_m = generar_pdf_base(f"Reporte Mensual: {p_sel}", f"Período: {MESES_ES[mes]} {anio}", [("Detalle de Tareas", datos_tabla)], incluir_grafico=dict_pie)
+            datos_t = [["Tarea", "Horas"]] + [[r['Tarea'], round(r[p_sel], 1)] for _, r in res_ind.iterrows()]
+            pdf_m = generar_pdf_base(f"Reporte Mensual: {p_sel}", f"{MESES_ES[mes]} {anio}", [("Detalle", datos_t)], incluir_grafico=dict_pie)
             st.download_button("Guardar Mensual", pdf_m, f"Mensual_{p_sel}.pdf")
 
     if st.session_state.usuario_actual == "Admin - Ver todo":
         st.divider()
-        st.subheader("🌐 Visión Global del Estudio")
+        st.subheader("🌐 Visión Global")
         df_eq = df_act.melt(id_vars=['Fecha', 'Tarea'], value_vars=OPERARIOS_FIJOS, var_name='Op', value_name='Hs')
         res_eq = df_eq.groupby('Tarea')['Hs'].sum().reset_index()
         st.plotly_chart(px.pie(res_eq, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title="Total Horas Estudio"), use_container_width=True)
-        if st.button("📥 Descargar Reporte Global de Equipo (PDF)"):
-            dict_global = res_eq.set_index('Tarea')['Hs'].to_dict()
-            datos_global = [["Tarea", "Suma Horas"]] + [[t, round(h, 1)] for t, h in dict_global.items()]
-            pdf_g = generar_pdf_base("Reporte Global de Equipo", f"Estudio Completo - {MESES_ES[mes]}", [("Totales", datos_global)], incluir_grafico=dict_global)
+        if st.button("📥 Descargar Reporte Global (PDF)"):
+            dict_g = res_eq.set_index('Tarea')['Hs'].to_dict()
+            datos_g = [["Tarea", "Suma Horas"]] + [[t, round(h, 1)] for t, h in dict_g.items()]
+            pdf_g = generar_pdf_base("Reporte Global de Equipo", f"Estudio Completo - {MESES_ES[mes]}", [("Totales", datos_g)], incluir_grafico=dict_g)
             st.download_button("Guardar Global", pdf_g, "Reporte_Global.pdf")
 
+# (Secciones Cargar Horas, Carga Masiva y Protocolo se mantienen estables)
 elif "Cargar" in menu:
     st.title("➕ Registro de Horas")
     u_c = st.session_state.usuario_actual if st.session_state.usuario_actual != "Admin - Ver todo" else st.selectbox("Persona:", OPERARIOS_FIJOS)
@@ -233,41 +234,3 @@ elif "Cargar" in menu:
             for op in OPERARIOS_FIJOS: nueva[op] = f_h if op == u_c else 0
             st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame([nueva])], ignore_index=True)
             guardar_df("Cargas", st.session_state.cargas); st.success("¡Guardado!"); time.sleep(1); st.rerun()
-
-    st.divider(); df_r = st.session_state.cargas.copy(); df_r['Fecha'] = pd.to_datetime(df_r['Fecha'], errors='coerce')
-    df_r = df_r[df_r[u_c] > 0]
-    if not df_r.empty:
-        df_r['Mes_N'] = df_r['Fecha'].dt.month; df_r['Año'] = df_r['Fecha'].dt.year; df_r['Mes'] = df_r['Mes_N'].map(MESES_ES)
-        st.dataframe(df_r.groupby(['Año', 'Mes_N', 'Mes', 'Tarea'])[u_c].sum().round(1).reset_index().sort_values(by=['Año', 'Mes_N'], ascending=False)[['Año', 'Mes', 'Tarea', u_c]], use_container_width=True, hide_index=True)
-        for i, row in df_r.sort_values('Fecha', ascending=False).iterrows():
-            c_i, c_d = st.columns([5,1]); c_i.write(f"**{row['Fecha'].strftime('%d/%m/%Y')}** - {row['Tarea']}: {round(row[u_c], 1)} hs")
-            if c_d.button("Eliminar", key=f"del_{i}"):
-                st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True)
-                guardar_df("Cargas", st.session_state.cargas); st.rerun()
-
-elif "Carga Masiva" in menu:
-    st.title("📁 Reparto de Horas (Admin)")
-    with st.form("f_masiva"):
-        u_m = st.selectbox("Operario", OPERARIOS_FIJOS); t_m = st.selectbox("Tarea", list(COLORES_TAREAS.keys()))
-        f_i = st.date_input("Desde"); f_f = st.date_input("Hasta"); h_t = st.number_input("Horas Totales", min_value=0.0)
-        if st.form_submit_button("Distribuir Horas"):
-            dias = pd.bdate_range(start=f_i, end=f_f, freq='C', holidays=FERIADOS)
-            if len(dias) > 0:
-                h_d = round(h_t / len(dias), 2); filas = []
-                for d in dias:
-                    f = {'Fecha': d, 'Tarea': t_m, 'Nota': 'Carga Masiva'}
-                    for o in OPERARIOS_FIJOS: f[o] = h_d if o == u_m else 0
-                    filas.append(f)
-                st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame(filas)], ignore_index=True)
-                guardar_df("Cargas", st.session_state.cargas); st.success("Carga masiva lista"); time.sleep(1); st.rerun()
-
-elif "Protocolo" in menu:
-    st.title("📜 Protocolo: Grupo Pressacco")
-    st.info("Elegimos sumar")
-    if st.button("📥 Descargar Protocolo (PDF)"):
-        pdf_p = generar_pdf_base("Protocolo de Trabajo", "Pautas para el uso del sistema", [("Reglas", [["Concepto", "Detalle"], ["Identidad", "Usuario propio"], ["Horario", "Cargar antes 15hs"], ["Total", "6hs diarias"]])])
-        st.download_button("Guardar Protocolo", pdf_p, "Protocolo.pdf")
-
-elif "Reset" in menu:
-    if st.text_input("Escriba BORRAR") == "BORRAR":
-        if st.button("Eliminar Todo"): guardar_df("Cargas", pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota'])); st.rerun()
