@@ -244,7 +244,7 @@ elif "Cargar" in menu:
 
     st.divider()
     
-    # --- CUADRO DE RESUMEN POR MES ---
+    # --- CUADRO DE RESUMEN POR MES (CON ORDEN CRONOLÓGICO) ---
     st.subheader(f"Resumen Mensual por Tarea para {u_c}")
     df_res = st.session_state.cargas.copy()
     df_res['Fecha'] = pd.to_datetime(df_res['Fecha'], errors='coerce')
@@ -254,9 +254,16 @@ elif "Cargar" in menu:
         df_res['Mes_N'] = df_res['Fecha'].dt.month
         df_res['Año'] = df_res['Fecha'].dt.year
         df_res['Mes'] = df_res['Mes_N'].map(MESES_ES)
-        cuadro = df_res.groupby(['Año', 'Mes', 'Tarea'])[u_c].sum().reset_index()
-        cuadro.columns = ['Año', 'Mes', 'Tarea', 'Hs Totales']
-        st.dataframe(cuadro.sort_values(['Año', 'Hs Totales'], ascending=False), use_container_width=True, hide_index=True)
+        
+        # Agrupamos incluyendo el número del mes para poder ordenar correctamente
+        cuadro = df_res.groupby(['Año', 'Mes_N', 'Mes', 'Tarea'])[u_c].sum().reset_index()
+        cuadro.columns = ['Año', 'Mes_N', 'Mes', 'Tarea', 'Hs Totales']
+        
+        # Ordenamos por Año y Número de Mes de forma descendente (Abril -> Marzo -> Febrero)
+        cuadro_ordenado = cuadro.sort_values(by=['Año', 'Mes_N'], ascending=False)
+        
+        # Quitamos la columna auxiliar Mes_N antes de mostrar la tabla
+        st.dataframe(cuadro_ordenado[['Año', 'Mes', 'Tarea', 'Hs Totales']], use_container_width=True, hide_index=True)
 
     st.divider()
     
