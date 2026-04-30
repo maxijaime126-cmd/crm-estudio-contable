@@ -8,8 +8,8 @@ from google.oauth2.service_account import Credentials
 from io import BytesIO
 import time
 
-# ===== 1. CONFIGURACIÓN =====
-st.set_page_config(page_title="CRM Capacidad Instalada", layout="wide")
+# ===== 1. CONFIGURACIÓN GENERAL =====
+st.set_page_config(page_title="CRM Grupo Pressacco", layout="wide")
 
 COLORES_TAREAS = {
     "DOCUMENTACIÓN CARGA": "#FFB6C1",
@@ -26,7 +26,7 @@ COLORES_TAREAS = {
 }
 
 OPERARIOS_FIJOS = ["Natalia", "Maximiliano", "Athina", "Johana"]
-HORAS_DIA_LABORAL = 6
+HORAS_DIA_LABORAL = 6[cite: 1]
 
 TAREAS_DISPONIBLE_TIPO = ["DISPONIBLE", "PLANIFICACIONES/ORGANIZACIÓN/PROCEDIMIENTO S/INFORMES", "INASISTENCIA POR EXAMEN O TRAMITE"]
 
@@ -35,7 +35,7 @@ MESES_ES = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Jun
 
 DIAS_SEMANA_ES = {0: "Lunes", 1: "Martes", 2: "Miércoles", 3: "Jueves", 4: "Viernes", 5: "Sábado", 6: "Domingo"}
 
-# ===== 2. FUNCIONES PDF (REPORTE Y PROTOCOLO ACTUALIZADO) =====
+# ===== 2. FUNCIONES PDF (REPORTE Y PROTOCOLO) =====
 def generar_pdf_protocolo():
     from reportlab.lib.pagesizes import letter
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListFlowable, ListItem
@@ -44,39 +44,30 @@ def generar_pdf_protocolo():
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter)
     s = getSampleStyleSheet()
-    
-    # Estilo personalizado para el Lema
     style_lema = getSampleStyleSheet()['Normal']
     style_lema.alignment = TA_CENTER
     style_lema.fontName = 'Helvetica-Oblique'
-
     story = [
         Paragraph("GRUPO PRESSACCO", s['Title']),
         Paragraph("<i>Elegimos sumar</i>", style_lema),
         Spacer(1, 20),
         Paragraph("Protocolo de Trabajo del Sistema", s['Heading1']),
         Spacer(1, 12),
-        Paragraph("1. Responsabilidad Individual y Privacidad", s['Heading2']),
-        Paragraph("Cada integrante debe ingresar con su usuario correspondiente. Es obligatorio cargar las horas únicamente en el panel personal para no distorsionar los datos de los demás compañeros y mantener la integridad de los reportes por sector.", s['Normal']),
+        Paragraph("1. Responsabilidad Individual", s['Heading2']),
+        Paragraph("Cada integrante debe cargar únicamente en su panel personal para mantener la integridad de los datos por sector.", s['Normal']),
         Spacer(1, 10),
         Paragraph("2. Reglas de Carga Diaria", s['Heading2']),
         ListFlowable([
             ListItem(Paragraph("Cargar horas todos los días antes de las 15:00 hs.", s['Normal'])),
             ListItem(Paragraph("La jornada debe completar siempre un total de 6 horas.", s['Normal'])),
-            ListItem(Paragraph("Cargar bloques mínimos de 30 minutos (0.5 hs) para mayor precisión.", s['Normal'])),
-            ListItem(Paragraph("Si no hay tareas operativas, registrar el tiempo restante como 'DISPONIBLE'.", s['Normal'])),
+            ListItem(Paragraph("Si no hay tareas operativas, registrar como 'DISPONIBLE'.", s['Normal'])),
         ], bulletType='bullet'),
-        Spacer(1, 10),
-        Paragraph("3. Significado del Semáforo de Bienestar", s['Heading2']),
-        Paragraph("🟢 VERDE: Más del 20% libre (Capacidad de sumar tareas).", s['Normal']),
-        Paragraph("🟡 AMARILLO: 10% a 20% libre (Carga óptima).", s['Normal']),
-        Paragraph("🔴 ROJO: Menos del 10% libre (Saturación / Necesidad de apoyo).", s['Normal']),
     ]
     doc.build(story)
     buf.seek(0)
     return buf
 
-def generar_pdf_reporte(nombre, mes, anio, total_hs, eficiencia, estado, df_tareas):
+def generar_pdf_reporte_completo(nombre, mes, anio, total_hs, eficiencia, estado, df_resumen):
     from reportlab.lib.pagesizes import letter
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
     from reportlab.lib.styles import getSampleStyleSheet
@@ -84,11 +75,25 @@ def generar_pdf_reporte(nombre, mes, anio, total_hs, eficiencia, estado, df_tare
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=letter)
     s = getSampleStyleSheet()
-    story = [Paragraph(f"Reporte {nombre} - {MESES_ES[mes]} {anio}", s['Title']), Spacer(1,12)]
-    data = [["Métrica", "Valor"], ["Total", f"{total_hs}hs"], ["Eficiencia", f"{eficiencia:.1f}%"], ["Estado", estado]]
-    t = Table(data, colWidths=[200, 200])
-    t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.grey),('GRID',(0,0),(-1,-1),1,colors.black)]))
-    story.append(t)
+    story = [
+        Paragraph("GRUPO PRESSACCO", s['Title']),
+        Paragraph(f"Reporte de Desempeño: {nombre}", s['Heading1']),
+        Paragraph(f"Período: {MESES_ES[mes]} {anio}", s['Normal']),
+        Spacer(1, 15),
+    ]
+    data_m = [["Métrica", "Valor"], ["Total Horas", f"{total_hs} hs"], ["Eficiencia", f"{eficiencia:.1f}%"], ["Estado", estado]]
+    tm = Table(data_m, colWidths=[200, 200])
+    tm.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.grey), ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke), ('GRID',(0,0),(-1,-1),1,colors.black)]))
+    story.append(tm)
+    story.append(Spacer(1, 20))
+    story.append(Paragraph("Desglose Detallado por Tarea", s['Heading2']))
+    data_t = [["Tarea", "Horas", "%"]]
+    for _, row in df_resumen.iterrows():
+        porc = (row['Hs'] / total_hs * 100) if total_hs > 0 else 0
+        data_t.append([row['Tarea'], f"{row['Hs']} hs", f"{porc:.1f}%"])
+    tt = Table(data_t, colWidths=[250, 80, 80])
+    tt.setStyle(TableStyle([('GRID',(0,0),(-1,-1),1,colors.black)]))
+    story.append(tt)
     doc.build(story)
     buf.seek(0)
     return buf
@@ -104,7 +109,7 @@ def cargar_hoja(nombre):
         ws = conectar().worksheet(nombre)
         df = pd.DataFrame(ws.get_all_records())
         for c in df.columns:
-            if 'fecha' in c.lower(): df[c] = pd.to_datetime(df[c], dayfirst=True, errors='coerce')
+            if 'fecha' in c.lower(): df[c] = pd.to_datetime(df[c], dayfirst=True, errors='coerce')[cite: 1]
         return df, ws
     except: return pd.DataFrame(), None
 
@@ -114,7 +119,7 @@ def guardar_df(nombre, df):
         ws.clear()
         df_c = df.copy()
         for c in df_c.columns:
-            if 'fecha' in c.lower(): df_c[c] = pd.to_datetime(df_c[c], errors='coerce').dt.strftime('%d/%m/%Y')
+            if 'fecha' in c.lower(): df_c[c] = pd.to_datetime(df_c[c], errors='coerce').dt.strftime('%d/%m/%Y')[cite: 1]
         ws.update([df_c.columns.values.tolist()] + df_c.fillna('').astype(str).values.tolist())
         st.cache_data.clear()
         return True
@@ -140,108 +145,69 @@ if 'usuario_actual' not in st.session_state:
     st.session_state.usuario_actual = None
 
 if st.session_state.usuario_actual is None:
-    st.title("CRM Estudio Contable")
+    st.title("CRM Grupo Pressacco")
     u = st.selectbox("Usuario:", ["Seleccionar..."] + OPERARIOS_FIJOS + ["Admin - Ver todo"])
     if st.button("Ingresar") and u != "Seleccionar...":
         st.session_state.usuario_actual = u
         st.rerun()
     st.stop()
 
-# ===== 5. MENÚ SIDEBAR (SOPORTE PARA ROLES) =====
+# ===== 5. MENÚ =====
 opciones = ["Panel de Control", "Cargar Horas", "Carga Masiva", "Protocolo de Trabajo", "Resetear Datos"] if st.session_state.usuario_actual == "Admin - Ver todo" else ["Panel de Control", "Cargar Mis Horas", "Protocolo de Trabajo"]
 menu = st.sidebar.radio("Menú", opciones)
 
-if st.sidebar.button("Salir"):
-    st.session_state.clear()
-    st.rerun()
-
-# ===== 6. SECCIONES =====
-
-if menu == "Protocolo de Trabajo":
-    st.title("📖 Protocolo: Grupo Pressacco")
-    st.subheader("Elegimos sumar")
-    st.info("Este protocolo garantiza que la información del estudio sea privada, organizada y útil para todos.")
-    
-    c1, c2 = st.columns(2)
-    with c1:
-        st.markdown("**1. Privacidad de los Datos**")
-        st.write("Cada integrante debe seleccionar **únicamente su nombre** al cargar. Esto evita errores en los paneles de los demás compañeros.")
-        st.markdown("**2. Horario de Carga**")
-        st.write("Carga tus horas diariamente antes de las 15:00 hs. No dejes días sin completar.")
-    with c2:
-        st.markdown("**3. ¿Qué es el Semáforo?**")
-        st.write("🟢 **OK:** Más del 20% libre.")
-        st.write("🟡 **Atención:** 10% a 20% libre.")
-        st.write("🔴 **Al límite:** Menos del 10% libre.")
-    
-    st.divider()
-    st.download_button("📥 Descargar Protocolo Oficial (PDF)", data=generar_pdf_protocolo(), file_name="Protocolo_Grupo_Pressacco.pdf")
-
-elif menu == "Panel de Control":
-    st.title("Panel de Control - Ocupación")
+# ===== 6. PANEL DE CONTROL (AUTOEVALUACIÓN) =====
+if menu == "Panel de Control":
+    st.title("Análisis y Autoevaluación")
     c1, c2 = st.columns(2)
     with c1: anio = st.selectbox("Año", [2025, 2026, 2027], index=1)
     with c2: mes = st.selectbox("Mes", list(range(1,13)), format_func=lambda x: MESES_ES[x], index=datetime.now().month-1)
 
-    inicio_m = datetime(anio, mes, 1).date()
-    fin_m = (datetime(anio, mes+1, 1) if mes < 12 else datetime(anio+1, 1, 1)).date() - timedelta(days=1)
-    dias_h = len(pd.bdate_range(start=inicio_m, end=fin_m, freq='C', holidays=FERIADOS))
-    cap_base = dias_h * HORAS_DIA_LABORAL
-    st.info(f"**{MESES_ES[mes]} {anio}**: {dias_h} días hábiles. Capacidad: {cap_base} hs.")
-
+    p_sel = st.selectbox("Integrante:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
     df_p = st.session_state.cargas.copy()
-    if not df_p.empty:
-        df_p['Fecha'] = pd.to_datetime(df_p['Fecha'], errors='coerce')
-        df_m = df_p[(df_p['Fecha'].dt.month == mes) & (df_p['Fecha'].dt.year == anio)]
-        
-        p_sel = st.selectbox("Operario:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
-        df_ind_melt = df_m.melt(id_vars=['Fecha', 'Tarea'], value_vars=[p_sel], var_name='Op', value_name='Hs')
-        df_ind_melt = df_ind_melt[df_ind_melt['Hs'] > 0]
-        
-        res_t = df_ind_melt.groupby('Tarea')['Hs'].sum().round(1).reset_index()
-        total_c = res_t['Hs'].sum().round(1)
-        hs_p = df_ind_melt[~df_ind_melt['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)]['Hs'].sum()
-        eficiencia = (hs_p / cap_base * 100) if cap_base > 0 else 0
-        porc_l = (df_ind_melt[df_ind_melt['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)]['Hs'].sum() / total_c * 100) if total_c > 0 else 0
-        
-        if porc_l >= 20.0: est = "🟢 OK"
-        elif porc_l >= 10.0: est = "🟡 Atención"
-        else: est = "🔴 Al límite"
+    df_p['Fecha'] = pd.to_datetime(df_p['Fecha'], errors='coerce')
 
-        col_g, col_m = st.columns([2,1])
-        with col_g:
-            st.plotly_chart(px.pie(res_t, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title=f"Ocupación {p_sel}"), use_container_width=True)
-        with col_m:
-            st.metric("Total Cargado", f"{total_c} hs")
-            st.metric("Eficiencia", f"{eficiencia:.1f}%")
-            st.metric("Disponibilidad", f"{porc_l:.1f}%")
-            st.subheader(f"Estado: {est}")
-            if st.button("Generar Reporte PDF"):
-                pdf_r = generar_pdf_reporte(p_sel, mes, anio, total_c, eficiencia, est, res_t)
-                st.download_button("Descargar Reporte", pdf_r, f"Reporte_{p_sel}.pdf")
+    # Cuadro Comparativo 3 Meses
+    st.subheader(f"Comparativa Trimestral - {p_sel}")
+    comp_list = []
+    for i in range(3):
+        m_c = mes - i
+        a_c = anio
+        if m_c <= 0: m_c += 12; a_c -= 1
+        
+        ini = datetime(a_c, m_c, 1).date()
+        fin = (datetime(a_c, m_c+1, 1) if m_c < 12 else datetime(a_c+1, 1, 1)).date() - timedelta(days=1)
+        cap = len(pd.bdate_range(start=ini, end=fin, freq='C', holidays=FERIADOS)) * HORAS_DIA_LABORAL[cite: 1]
+        
+        df_m = df_p[(df_p['Fecha'].dt.month == m_c) & (df_p['Fecha'].dt.year == a_c)]
+        total = df_m[p_sel].sum()
+        h_prod = df_m[~df_m['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)][p_sel].sum()
+        h_disp = df_m[df_m['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)][p_sel].sum()
+        efic = (h_prod / cap * 100) if cap > 0 else 0[cite: 1]
+        dispon = (h_disp / total * 100) if total > 0 else 0[cite: 1]
+        comp_list.append({"Mes": MESES_ES[m_c], "Carga Total": f"{total}hs", "Eficiencia": f"{efic:.1f}%", "Disponible": f"{dispon:.1f}%"})
+    
+    st.table(pd.DataFrame(comp_list))
 
-elif menu == "Carga Masiva":
-    st.title("Carga Masiva de Horas")
-    with st.form("f_masiva"):
-        u_m = st.selectbox("Operario", OPERARIOS_FIJOS)
-        t_m = st.selectbox("Tarea", list(COLORES_TAREAS.keys()))
-        f_i = st.date_input("Inicio"); f_f = st.date_input("Fin")
-        h_t = st.number_input("Horas Totales", min_value=0.0)
-        if st.form_submit_button("Guardar"):
-            dias = pd.bdate_range(start=f_i, end=f_f, freq='C', holidays=FERIADOS)
-            if len(dias) > 0:
-                h_d = round(h_t / len(dias), 2)
-                filas = []
-                for d in dias:
-                    f = {'Fecha': d, 'Tarea': t_m, 'Nota': 'Carga Masiva'}
-                    for o in OPERARIOS_FIJOS: f[o] = h_d if o == u_m else 0
-                    filas.append(f)
-                st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame(filas)], ignore_index=True)
-                guardar_df("Cargas", st.session_state.cargas)
-                st.success("Carga masiva completada"); time.sleep(1); st.rerun()
+    # Gráfico y Reporte
+    df_actual = df_p[(df_p['Fecha'].dt.month == mes) & (df_p['Fecha'].dt.year == anio)]
+    res_t = df_actual.groupby('Tarea')[p_sel].sum().round(1).reset_index()
+    res_t.columns = ['Tarea', 'Hs']
+    res_t = res_t[res_t['Hs'] > 0][cite: 1]
+    
+    col_g, col_m = st.columns([2,1])
+    with col_g:
+        st.plotly_chart(px.pie(res_t, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title=f"Ocupación {p_sel}"), use_container_width=True)
+    with col_m:
+        st.metric("Eficiencia Actual", comp_list[0]["Eficiencia"])
+        st.metric("Disponible Actual", comp_list[0]["Disponible"])
+        if st.button("Generar Reporte Detallado PDF"):
+            pdf = generar_pdf_reporte_completo(p_sel, mes, anio, df_actual[p_sel].sum(), float(comp_list[0]["Eficiencia"].replace('%','')), "Analizado", res_t)
+            st.download_button("Descargar PDF", pdf, f"Reporte_{p_sel}.pdf")
 
+# ===== 7. CARGA DE HORAS E HISTORIAL =====
 elif "Cargar" in menu:
-    st.title("Cargar Horas")
+    st.title("Registro de Horas")
     u_c = st.selectbox("Persona:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
     with st.form("f_ind"):
         f_f = st.date_input("Fecha", value=datetime.now())
@@ -255,25 +221,47 @@ elif "Cargar" in menu:
             st.success("Guardado"); time.sleep(1); st.rerun()
 
     st.divider()
-    st.subheader(f"Resumen y Detalle para {u_c}")
-    df_res = st.session_state.cargas.copy()
-    df_res['Fecha'] = pd.to_datetime(df_res['Fecha'], errors='coerce')
-    df_res = df_res[df_res[u_c] > 0]
-    if not df_res.empty:
-        df_res['Mes_N'] = df_res['Fecha'].dt.month; df_res['Año'] = df_res['Fecha'].dt.year; df_res['Mes'] = df_res['Mes_N'].map(MESES_ES)
-        cuadro = df_res.groupby(['Año', 'Mes_N', 'Mes', 'Tarea'])[u_c].sum().reset_index()
-        st.dataframe(cuadro.sort_values(by=['Año', 'Mes_N'], ascending=False)[['Año', 'Mes', 'Tarea', u_c]], use_container_width=True, hide_index=True)
+    st.subheader("Resumen Mensual Cronológico")
+    df_r = st.session_state.cargas.copy()
+    df_r['Fecha'] = pd.to_datetime(df_r['Fecha'], errors='coerce')
+    df_r = df_r[df_r[u_c] > 0]
+    if not df_r.empty:
+        df_r['Mes_N'] = df_r['Fecha'].dt.month; df_r['Año'] = df_r['Fecha'].dt.year; df_r['Mes'] = df_r['Mes_N'].map(MESES_ES)
+        cuadro = df_r.groupby(['Año', 'Mes_N', 'Mes', 'Tarea'])[u_c].sum().reset_index()
+        st.dataframe(cuadro.sort_values(by=['Año', 'Mes_N'], ascending=False)[['Año', 'Mes', 'Tarea', u_c]], use_container_width=True, hide_index=True)[cite: 1]
         
-        st.write("**Historial Detallado:**")
-        for i, row in df_res.sort_values('Fecha', ascending=False).iterrows():
+        st.write("**Historial para eliminar:**")
+        for i, row in df_r.sort_values('Fecha', ascending=False).iterrows():
             c_i, c_d = st.columns([5,1])
             c_i.write(f"**{row['Fecha'].strftime('%d/%m/%Y')}** - {row['Tarea']}: {row[u_c]} hs")
             if c_d.button("Eliminar", key=f"del_{i}"):
                 st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True)
                 guardar_df("Cargas", st.session_state.cargas); st.rerun()
 
+# ===== 8. CARGA MASIVA =====
+elif menu == "Carga Masiva":
+    st.title("Carga Masiva (Admin)")
+    with st.form("f_masiva"):
+        u_m = st.selectbox("Operario", OPERARIOS_FIJOS); t_m = st.selectbox("Tarea", list(COLORES_TAREAS.keys()))
+        f_i = st.date_input("Inicio"); f_f = st.date_input("Fin"); h_t = st.number_input("Horas Totales", min_value=0.0)
+        if st.form_submit_button("Repartir Horas"):
+            dias = pd.bdate_range(start=f_i, end=f_f, freq='C', holidays=FERIADOS)
+            if len(dias) > 0:
+                h_d = round(h_t / len(dias), 2)
+                filas = []
+                for d in dias:
+                    f = {'Fecha': d, 'Tarea': t_m, 'Nota': 'Carga Masiva'}
+                    for o in OPERARIOS_FIJOS: f[o] = h_d if o == u_m else 0
+                    filas.append(f)
+                st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame(filas)], ignore_index=True)
+                guardar_df("Cargas", st.session_state.cargas); st.success("Carga masiva lista"); time.sleep(1); st.rerun()
+
+elif menu == "Protocolo de Trabajo":
+    st.title("📖 Protocolo: Grupo Pressacco")
+    st.info("Elegimos sumar")
+    st.download_button("Descargar Protocolo PDF", data=generar_pdf_protocolo(), file_name="Protocolo_Pressacco.pdf")
+
 elif menu == "Resetear Datos":
     if st.text_input("Escriba BORRAR") == "BORRAR":
         if st.button("Eliminar Todo"):
-            guardar_df("Cargas", pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota']))
-            st.rerun()
+            guardar_df("Cargas", pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota'])); st.rerun()
