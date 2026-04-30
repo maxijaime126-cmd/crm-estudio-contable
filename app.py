@@ -28,7 +28,7 @@ COLORES_TAREAS = {
 }
 
 OPERARIOS_FIJOS = ["Natalia", "Maximiliano", "Athina", "Johana"]
-HORAS_DIA_LABORAL = 6[cite: 1]
+HORAS_DIA_LABORAL = 6
 
 TAREAS_DISPONIBLE_TIPO = [
     "DISPONIBLE",
@@ -48,7 +48,7 @@ def cargar_feriados_desde_csv():
         df_f = pd.read_csv("feriados_2026.csv")
         df_f.columns = df_f.columns.str.strip().str.lower()
         if 'fecha' in df_f.columns:
-            df_f['fecha'] = pd.to_datetime(df_f['fecha'], errors='coerce')[cite: 1]
+            df_f['fecha'] = pd.to_datetime(df_f['fecha'], errors='coerce')
             return df_f['fecha'].dt.date.dropna().tolist()
         return []
     except Exception:
@@ -72,7 +72,7 @@ def cargar_hoja(nombre_hoja):
         df.columns = df.columns.str.strip()
         for col in df.columns:
             if 'fecha' in col.lower():
-                df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')[cite: 1]
+                df[col] = pd.to_datetime(df[col], dayfirst=True, errors='coerce')
         return df, ws
     except:
         return pd.DataFrame(), None
@@ -84,7 +84,7 @@ def guardar_df(nombre_hoja, df):
         df_copy = df.copy()
         for col in df_copy.columns:
             if 'fecha' in col.lower():
-                df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.strftime('%d/%m/%Y')[cite: 1]
+                df_copy[col] = pd.to_datetime(df_copy[col], errors='coerce').dt.strftime('%d/%m/%Y')
         df_copy = df_copy.fillna('').astype(str)
         ws.update([df_copy.columns.values.tolist()] + df_copy.values.tolist())
         st.cache_data.clear()
@@ -95,12 +95,15 @@ def guardar_df(nombre_hoja, df):
 
 # ===== 5. FUNCIONES DE CAPACIDAD =====
 def calcular_dias_habiles(fecha_inicio, fecha_fin):
-    dias = pd.bdate_range(start=fecha_inicio, end=fecha_fin, freq='C', holidays=FERIADOS)[cite: 1]
+    dias = pd.bdate_range(start=fecha_inicio, end=fecha_fin, freq='C', holidays=FERIADOS)
     return len(dias)
 
 def calcular_capacidad_mensual(anio, mes):
     inicio = datetime(anio, mes, 1)
-    fin = (datetime(anio, mes + 1, 1) if mes < 12 else datetime(anio + 1, 1, 1)) - timedelta(days=1)
+    if mes == 12:
+        fin = datetime(anio + 1, 1, 1) - timedelta(days=1)
+    else:
+        fin = datetime(anio, mes + 1, 1) - timedelta(days=1)
     dias_h = calcular_dias_habiles(inicio.date(), fin.date())
     return dias_h, dias_h * HORAS_DIA_LABORAL
 
@@ -177,13 +180,12 @@ if menu == "Panel de Control":
             cap_real = cap_base - hs_exc
             df_ind = df_melt[df_melt['Operario'] == persona_sel]
             
-            resumen_t = df_ind.groupby('Tarea')['Horas'].sum().round(1).reset_index()[cite: 1]
+            resumen_t = df_ind.groupby('Tarea')['Horas'].sum().round(1).reset_index()
             total_c = resumen_t['Horas'].sum().round(1)
             
             hs_libres = df_ind[df_ind['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)]['Horas'].sum().round(1)
             porc_libres = (hs_libres / total_c * 100) if total_c > 0 else 0
 
-            # Semáforo Corregido[cite: 1]
             if porc_libres > 20: color_s = "🟢 OK"
             elif porc_libres >= 10: color_s = "🟡 Atención"
             else: color_s = "🔴 Al límite"
@@ -224,7 +226,7 @@ if menu == "Panel de Control":
             if st.session_state.usuario_actual == "Admin - Ver todo":
                 st.divider()
                 st.subheader("Distribución del Equipo Total")
-                dist_eq = df_melt.groupby('Tarea')['Horas'].sum().round(1).reset_index()[cite: 1]
+                dist_eq = df_melt.groupby('Tarea')['Horas'].sum().round(1).reset_index()
                 total_eq = dist_eq['Horas'].sum().round(1)
                 
                 c_eq1, c_eq2 = st.columns([2,1])
@@ -234,7 +236,6 @@ if menu == "Panel de Control":
                     st.plotly_chart(fig_eq, use_container_width=True)
                 with c_eq2:
                     st.metric("Total Equipo", f"{total_eq} hs")
-                    # Resumen por persona
                     res_op = []
                     for op in OPERARIOS_FIJOS:
                         h_op = df_melt[df_melt['Operario'] == op]['Horas'].sum().round(1)
@@ -244,7 +245,7 @@ if menu == "Panel de Control":
 # ===== 9. CARGAR HORAS =====
 elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
     st.title("Cargar Horas")
-    u_c = st.selectbox("Persona:", OPERARIOS_FI_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
+    u_c = st.selectbox("Persona:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
     with st.form("f_c"):
         f_f = st.date_input("Fecha", value=datetime.now())
         f_t = st.selectbox("Tarea", list(COLORES_TAREAS.keys()))
@@ -253,7 +254,7 @@ elif menu in ["Cargar Mis Horas", "Cargar Horas"]:
         if st.form_submit_button("Guardar"):
             if f_h > 0:
                 nueva = {'Fecha': f_f, 'Tarea': f_t, 'Nota': f_n}
-                for op in OPERARIOS_FIJOS: nueva[op] = round(f_h, 2) if op == u_c else 0[cite: 1]
+                for op in OPERARIOS_FIJOS: nueva[op] = round(f_h, 2) if op == u_c else 0
                 st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame([nueva])], ignore_index=True)
                 guardar_df("Cargas", st.session_state.cargas)
                 st.success("Guardado correctamente.")
