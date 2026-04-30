@@ -274,19 +274,22 @@ elif "Cargar" in menu:
             st.success("¡Guardado!"); time.sleep(1); st.rerun()
 
     st.divider()
-    st.subheader("📋 Historial y Resumen (Solo Mes Actual)")
+    st.subheader("📋 Historial y Consulta")
+    
+    # Filtro Dinámico de Mes para el Historial
+    mes_filt = st.selectbox("Consultar Mes:", list(range(1,13)), format_func=lambda x: MESES_ES[x], index=datetime.now().month-1)
+    
     df_h = st.session_state.cargas.copy(); df_h['Fecha'] = pd.to_datetime(df_h['Fecha'], errors='coerce')
-    mes_hoy = datetime.now().month
     anio_hoy = datetime.now().year
     
-    # Filtrar historial: solo usuario actual y solo mes actual
-    df_filtrado = df_h[(df_h[u_c] > 0) & (df_h['Fecha'].dt.month == mes_hoy) & (df_h['Fecha'].dt.year == anio_hoy)]
+    # Filtrar historial: usuario actual y mes seleccionado
+    df_filtrado = df_h[(df_h[u_c] > 0) & (df_h['Fecha'].dt.month == mes_filt) & (df_h['Fecha'].dt.year == anio_hoy)]
     
     if not df_filtrado.empty:
-        st.write(f"**Resumen de Tareas - {MESES_ES[mes_hoy]}**")
+        st.write(f"**Resumen de Tareas - {MESES_ES[mes_filt]}**")
         st.dataframe(df_filtrado.groupby('Tarea')[u_c].sum().round(1).reset_index(), use_container_width=True, hide_index=True)
         
-        st.write("**Registros del Mes:**")
+        st.write("**Registros Encontrados:**")
         for i, row in df_filtrado.sort_values('Fecha', ascending=False).iterrows():
             c1, c2 = st.columns([6, 1])
             c1.write(f"📅 {row['Fecha'].strftime('%d/%m/%Y')} | {row['Tarea']} | {round(row[u_c], 1)} hs | {row['Nota']}")
@@ -294,7 +297,7 @@ elif "Cargar" in menu:
                 st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True)
                 guardar_df("Cargas", st.session_state.cargas); st.rerun()
     else:
-        st.info(f"No hay registros cargados para {MESES_ES[mes_hoy]}.")
+        st.info(f"No se encontraron registros para {MESES_ES[mes_filt]}.")
 
 # (Secciones Masiva, Protocolo y Reset)
 elif "Carga Masiva" in menu:
