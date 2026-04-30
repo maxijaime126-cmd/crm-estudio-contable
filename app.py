@@ -52,11 +52,10 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None, 
 
     if es_protocolo:
         contenido = [
-            ("<b>¿Para qué sirve este CRM?</b>", "Para medir nuestra capacidad real y eficiencia. Si no registramos las horas, no sabemos cuánto nos lleva cada proceso. Con este sistema, detectamos cuellos de botella y planificamos mejor el mes."),
-            ("<b>INGRESO Y CARGA - El registro diario</b>", "Carga diaria de 6 horas obligatorias.<br/>• <b>Usuario:</b> Propio. Nunca cargues en el de un compañero.<br/>• <b>Horas:</b> El total debe sumar 6hs diarias."),
-            ("<b>CÁLCULO DE DISPONIBILIDAD</b>", "La capacidad neta del mes se calcula restando las <b>Inasistencias</b> del total de días hábiles. Sobre ese neto, se mide cuánto tiempo libre (Disponible + Planificaciones) queda."),
-            ("<b>SEMÁFORO DE ESTADO</b>", "• 🟢 <b>Verde (>20%):</b> Capacidad libre para nuevos proyectos.<br/>• 🟡 <b>Amarillo (10-20%):</b> Atención, poca disponibilidad.<br/>• 🔴 <b>Rojo (<10%):</b> Preocupación, saturación de tareas."),
-            ("<b>REGLAS DE ORO</b>", "• Carga antes de las 15:00 hs.<br/>• Sinceridad total: si no tenés tareas, cargá DISPONIBLE.<br/>• No tocar el Google Sheets de forma manual.")
+            ("<b>¿Para qué sirve este CRM?</b>", "Para medir capacidad real y eficiencia. Detectar cuellos de botella y planificar mejor el mes."),
+            ("<b>INGRESO Y CARGA</b>", "Carga obligatoria de 6 horas diarias antes de las 15:00 hs. Las inasistencias descuentan capacidad."),
+            ("<b>CÁLCULO DE DISPONIBILIDAD</b>", "Capacidad neta = Días hábiles - Inasistencias. Sobre ese neto se mide Disponible + Planificaciones."),
+            ("<b>SEMÁFORO DE ESTADO</b>", "• 🟢 Verde (>20%) • 🟡 Amarillo (10-20%) • 🔴 Rojo (<10%).")
         ]
         for t, c in contenido:
             story.append(Paragraph(t, s['Heading3'])); story.append(Paragraph(c, estilo_cuerpo)); story.append(Spacer(1, 10))
@@ -232,8 +231,12 @@ if "Panel de Control" in menu:
             rows_g.append(fila)
         rows_g.append(["TOTAL"] + [round(x, 1) for x in totales_g])
         st.table(pd.DataFrame(rows_g, columns=["Tarea"] + meses_g))
+        # BOTÓN PDF GLOBAL
+        if st.button("📥 Descargar Reporte Global Trimestral (PDF)"):
+            pdf_g = generar_pdf_base("REPORTE GLOBAL TRIMESTRAL", "Estudio Completo - Grupo Pressacco", [("Consolidado de Equipo", [["Tarea"] + meses_g] + rows_g)], incluir_grafico=res_eq.set_index('Tarea')['Hs'].to_dict())
+            st.download_button("Guardar Reporte Global", pdf_g, "Global_Trimestral.pdf")
 
-# ===== 8. CARGAR HORAS =====
+# ===== 8. CARGAR HORAS (CON FILTROS Y RESUMEN) =====
 elif "Cargar" in menu:
     st.title("➕ Registro de Horas")
     u_c = st.session_state.usuario_actual if st.session_state.usuario_actual != "Admin - Ver todo" else st.selectbox("Persona:", OPERARIOS_FIJOS)
@@ -244,15 +247,20 @@ elif "Cargar" in menu:
             for op in OPERARIOS_FIJOS: nueva[op] = f_h if op == u_c else 0
             st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame([nueva])], ignore_index=True)
             guardar_df("Cargas", st.session_state.cargas); st.success("¡Guardado!"); time.sleep(1); st.rerun()
+    
+    # REINCORPORACIÓN DE FILTROS Y RESUMEN EN CARGA[cite: 1]
     st.divider(); st.subheader("📋 Historial y Consulta")
     mes_filt = st.selectbox("Consultar Mes:", list(range(1,13)), format_func=lambda x: MESES_ES[x], index=datetime.now().month-1)
     df_h = st.session_state.cargas.copy(); df_h['Fecha'] = pd.to_datetime(df_h['Fecha'], errors='coerce')
     df_f = df_h[(df_h[u_c] > 0) & (df_h['Fecha'].dt.month == mes_filt)]
-    for i, row in df_f.sort_values('Fecha', ascending=False).iterrows():
-        c1, c2 = st.columns([6, 1])
-        c1.write(f"📅 {row['Fecha'].strftime('%d/%m/%Y')} | {row['Tarea']} | {row[u_c]} hs | {row['Nota']}")
-        if c2.button("Eliminar", key=f"del_{i}"):
-            st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True); guardar_df("Cargas", st.session_state.cargas); st.rerun()
+    if not df_f.empty:
+        st.write(f"**Resumen de Tareas - {MESES_ES[mes_filt]}**")
+        st.dataframe(df_f.groupby('Tarea')[u_c].sum().round(1).reset_index(), use_container_width=True, hide_index=True)
+        for i, row in df_f.sort_values('Fecha', ascending=False).iterrows():
+            c1, c2 = st.columns([6, 1])
+            c1.write(f"📅 {row['Fecha'].strftime('%d/%m/%Y')} | {row['Tarea']} | {row[u_c]} hs | {row['Nota']}")
+            if c2.button("Eliminar", key=f"del_{i}"):
+                st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True); guardar_df("Cargas", st.session_state.cargas); st.rerun()
 
 elif "Protocolo" in menu:
     st.title("📜 Protocolo de Uso")
