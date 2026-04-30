@@ -54,7 +54,8 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None, 
         contenido = [
             ("<b>¿Para qué sirve este CRM?</b>", "Para medir capacidad real y eficiencia. Detectar cuellos de botella y planificar mejor el mes."),
             ("<b>INGRESO Y CARGA</b>", "Carga diaria de 6 horas obligatorias. Las inasistencias se detallan pero descuentan capacidad neta."),
-            ("<b>REGLAS DE ORO</b>", "• Carga antes de las 15:00 hs. • Sinceridad total. • No tocar el Sheets manual.")
+            ("<b>DISPONIBILIDAD</b>", "Se mide sobre la capacidad neta. >20% Verde, 10-20% Amarillo, <10% Rojo."),
+            ("<b>REGLAS DE ORO</b>", "• Usar usuario propio. • Sinceridad total. • Carga antes de las 15:00 hs.")
         ]
         for t, c in contenido:
             story.append(Paragraph(t, s['Heading3'])); story.append(Paragraph(c, estilo_cuerpo)); story.append(Spacer(1, 10))
@@ -62,7 +63,6 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None, 
     if incluir_grafico:
         d = Drawing(450, 200); pc = Pie(); pc.x = 50; pc.y = 25; pc.width = 130; pc.height = 130
         lista_colores = [colors.magenta, colors.deepskyblue, colors.lightpink, colors.yellow, colors.whitesmoke, colors.lightblue, colors.lavender, colors.bisque, colors.turquoise, colors.lime, colors.hotpink]
-        # Para el gráfico, solo usamos tareas productivas
         grafico_limpio = {k: v for k, v in incluir_grafico.items() if k not in TAREAS_DESCUENTO_CAPACIDAD}
         total_h = sum(grafico_limpio.values())
         pc.data = [round(float(v), 1) for v in grafico_limpio.values()]
@@ -198,7 +198,6 @@ if "Panel de Control" in menu:
     
     if not res_ind.empty:
         col_p, col_m = st.columns([2,1])
-        # El gráfico solo muestra tareas productivas para no distorsionar eficiencia
         res_neta_grafico = res_ind[~res_ind['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)]
         with col_p: st.plotly_chart(px.pie(res_neta_grafico, values=p_sel, names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title=f"Eficiencia Real (Sin Inasistencias) - {p_sel}"), use_container_width=True)
         with col_m:
@@ -213,7 +212,6 @@ if "Panel de Control" in menu:
                 total_neto = total_bruto - h_ina
                 datos_t = [["Tarea", "Horas", "% (sobre Neto)"]]
                 for _, r in res_ind.iterrows():
-                    # El % se calcula sobre el neto si no es inasistencia
                     porc = f"{round((r[p_sel]/total_neto)*100, 1)}%" if total_neto > 0 and r['Tarea'] not in TAREAS_DESCUENTO_CAPACIDAD else "-"
                     datos_t.append([r['Tarea'], round(r[p_sel], 1), porc])
                 datos_t.append(["TOTAL CARGADO", round(total_bruto, 1), ""])
@@ -226,8 +224,27 @@ if "Panel de Control" in menu:
         df_eq_neta = df_act[~df_act['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)].melt(id_vars=['Fecha', 'Tarea'], value_vars=OPERARIOS_FIJOS, var_name='Op', value_name='Hs')
         res_eq_neta = df_eq_neta.groupby('Tarea')['Hs'].sum().reset_index()
         st.plotly_chart(px.pie(res_eq_neta, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title="Total Horas Productivas Equipo"), use_container_width=True)
+        # Historial Global Trimestral Neto
+        hist_g = {}
+        for i in range(3):
+            m_c = mes - i; a_c = anio
+            if m_c <= 0: m_c += 12; a_c -= 1
+            df_m_g = df_p[(df_p['Fecha'].dt.month == m_c) & (df_p['Fecha'].dt.year == a_c)]
+            hist_g[MESES_ES[m_c]] = df_m_g[~df_m_g['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)][OPERARIOS_FIJOS].sum(axis=1).groupby(df_m_g['Tarea']).sum().to_dict()
+        tareas_g = sorted(list(set([t for m in hist_g for t in hist_g[m].keys()]))); meses_g = list(hist_g.keys())
+        rows_g = []; totales_g = [0.0] * len(meses_g)
+        for t in tareas_g:
+            fila = [t]
+            for idx, m in enumerate(meses_g):
+                val = round(float(hist_g[m].get(t, 0)), 1); fila.append(val); totales_g[idx] += val
+            rows_g.append(fila)
+        rows_g.append(["TOTAL NETO"] + [round(x, 1) for x in totales_g])
+        st.table(pd.DataFrame(rows_g, columns=["Tarea"] + meses_g))
+        if st.button("📥 Descargar Reporte Global Trimestral (PDF)"):
+            pdf_g = generar_pdf_base("REPORTE GLOBAL NETO", "Estudio Completo - Sin Inasistencias", [("Consolidado Productivo", [["Tarea"] + meses_g] + rows_g)], incluir_grafico=res_eq_neta.set_index('Tarea')['Hs'].to_dict())
+            st.download_button("Guardar Reporte Global", pdf_g, "Global_Neto.pdf")
 
-# ===== 8. CARGAR HORAS (CON FILTROS Y RESUMEN TRANSPARENTE) =====
+# ===== 8. CARGAR HORAS =====
 elif "Cargar" in menu:
     st.title("➕ Registro de Horas")
     u_c = st.session_state.usuario_actual if st.session_state.usuario_actual != "Admin - Ver todo" else st.selectbox("Persona:", OPERARIOS_FIJOS)
@@ -244,14 +261,40 @@ elif "Cargar" in menu:
     df_h = st.session_state.cargas.copy(); df_h['Fecha'] = pd.to_datetime(df_h['Fecha'], errors='coerce')
     df_f = df_h[(df_h[u_c] > 0) & (df_h['Fecha'].dt.month == mes_filt)]
     if not df_f.empty:
-        # Resumen Transparente: Bruto, Inasistencias y Neto
         total_bruto = df_f[u_c].sum()
         inasistencias = df_f[df_f['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)][u_c].sum()
         st.info(f"**Resumen {MESES_ES[mes_filt]}:** Total Cargado: {round(total_bruto, 1)} hs | Inasistencias: {round(inasistencias, 1)} hs | **Neto: {round(total_bruto - inasistencias, 1)} hs**")
-        
         st.dataframe(df_f.groupby('Tarea')[u_c].sum().round(1).reset_index(), use_container_width=True, hide_index=True)
         for i, row in df_f.sort_values('Fecha', ascending=False).iterrows():
             c1, c2 = st.columns([6, 1])
             c1.write(f"📅 {row['Fecha'].strftime('%d/%m/%Y')} | {row['Tarea']} | {row[u_c]} hs | {row['Nota']}")
             if c2.button("Eliminar", key=f"del_{i}"):
                 st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True); guardar_df("Cargas", st.session_state.cargas); st.rerun()
+
+# ===== 9. PROTOCOLO (Sujeto a Restauración) =====
+elif "Protocolo" in menu:
+    st.title("📜 Protocolo de Uso")
+    st.markdown("### ¿Para qué sirve este CRM?")
+    st.write("Para medir capacidad real y eficiencia. Detectar cuellos de botella y planificar mejor el mes.")
+    if st.button("📥 Descargar Guía Maestra (PDF)"):
+        pdf = generar_pdf_base("PROTOCOLO DE USO - CRM", "Guía Completa de Funcionamiento", [], es_protocolo=True)
+        st.download_button("Guardar Protocolo Maestro", pdf, "Protocolo_Pressacco.pdf")
+
+# ===== 10. CARGA MASIVA (Sujeto a Restauración) =====
+elif "Carga Masiva" in menu:
+    st.title("📁 Reparto de Horas (Admin)")
+    with st.form("f_m"):
+        u_m = st.selectbox("Operario", OPERARIOS_FIJOS); t_m = st.selectbox("Tarea", list(COLORES_TAREAS.keys())); f_i = st.date_input("Desde"); f_f = st.date_input("Hasta"); h_t = st.number_input("Horas Totales", min_value=0.0)
+        if st.form_submit_button("Distribuir"):
+            dias = pd.bdate_range(start=f_i, end=f_f, freq='C', holidays=FERIADOS)
+            if len(dias) > 0:
+                h_d = round(h_t / len(dias), 2); filas = []
+                for d in dias:
+                    f = {'Fecha': d, 'Tarea': t_m, 'Nota': 'Carga Masiva'}
+                    for o in OPERARIOS_FIJOS: f[o] = h_d if o == u_m else 0
+                    filas.append(f)
+                st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame(filas)], ignore_index=True); guardar_df("Cargas", st.session_state.cargas); st.rerun()
+
+elif "Reset" in menu:
+    if st.text_input("Escriba BORRAR") == "BORRAR":
+        if st.button("Eliminar Todo"): guardar_df("Cargas", pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota'])); st.rerun()
