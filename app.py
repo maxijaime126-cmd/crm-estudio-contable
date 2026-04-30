@@ -26,7 +26,7 @@ COLORES_TAREAS = {
 }
 
 OPERARIOS_FIJOS = ["Natalia", "Maximiliano", "Athina", "Johana"]
-HORAS_DIA_LABORAL = 6[cite: 1]
+HORAS_DIA_LABORAL = 6
 
 TAREAS_DISPONIBLE_TIPO = ["DISPONIBLE", "PLANIFICACIONES/ORGANIZACIÓN/PROCEDIMIENTO S/INFORMES", "INASISTENCIA POR EXAMEN O TRAMITE"]
 
@@ -109,7 +109,7 @@ def cargar_hoja(nombre):
         ws = conectar().worksheet(nombre)
         df = pd.DataFrame(ws.get_all_records())
         for c in df.columns:
-            if 'fecha' in c.lower(): df[c] = pd.to_datetime(df[c], dayfirst=True, errors='coerce')[cite: 1]
+            if 'fecha' in c.lower(): df[c] = pd.to_datetime(df[c], dayfirst=True, errors='coerce')
         return df, ws
     except: return pd.DataFrame(), None
 
@@ -119,7 +119,7 @@ def guardar_df(nombre, df):
         ws.clear()
         df_c = df.copy()
         for c in df_c.columns:
-            if 'fecha' in c.lower(): df_c[c] = pd.to_datetime(df_c[c], errors='coerce').dt.strftime('%d/%m/%Y')[cite: 1]
+            if 'fecha' in c.lower(): df_c[c] = pd.to_datetime(df_c[c], errors='coerce').dt.strftime('%d/%m/%Y')
         ws.update([df_c.columns.values.tolist()] + df_c.fillna('').astype(str).values.tolist())
         st.cache_data.clear()
         return True
@@ -177,14 +177,14 @@ if menu == "Panel de Control":
         
         ini = datetime(a_c, m_c, 1).date()
         fin = (datetime(a_c, m_c+1, 1) if m_c < 12 else datetime(a_c+1, 1, 1)).date() - timedelta(days=1)
-        cap = len(pd.bdate_range(start=ini, end=fin, freq='C', holidays=FERIADOS)) * HORAS_DIA_LABORAL[cite: 1]
+        cap = len(pd.bdate_range(start=ini, end=fin, freq='C', holidays=FERIADOS)) * HORAS_DIA_LABORAL
         
         df_m = df_p[(df_p['Fecha'].dt.month == m_c) & (df_p['Fecha'].dt.year == a_c)]
         total = df_m[p_sel].sum()
         h_prod = df_m[~df_m['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)][p_sel].sum()
         h_disp = df_m[df_m['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)][p_sel].sum()
-        efic = (h_prod / cap * 100) if cap > 0 else 0[cite: 1]
-        dispon = (h_disp / total * 100) if total > 0 else 0[cite: 1]
+        efic = (h_prod / cap * 100) if cap > 0 else 0
+        dispon = (h_disp / total * 100) if total > 0 else 0
         comp_list.append({"Mes": MESES_ES[m_c], "Carga Total": f"{total}hs", "Eficiencia": f"{efic:.1f}%", "Disponible": f"{dispon:.1f}%"})
     
     st.table(pd.DataFrame(comp_list))
@@ -193,7 +193,7 @@ if menu == "Panel de Control":
     df_actual = df_p[(df_p['Fecha'].dt.month == mes) & (df_p['Fecha'].dt.year == anio)]
     res_t = df_actual.groupby('Tarea')[p_sel].sum().round(1).reset_index()
     res_t.columns = ['Tarea', 'Hs']
-    res_t = res_t[res_t['Hs'] > 0][cite: 1]
+    res_t = res_t[res_t['Hs'] > 0]
     
     col_g, col_m = st.columns([2,1])
     with col_g:
@@ -228,7 +228,7 @@ elif "Cargar" in menu:
     if not df_r.empty:
         df_r['Mes_N'] = df_r['Fecha'].dt.month; df_r['Año'] = df_r['Fecha'].dt.year; df_r['Mes'] = df_r['Mes_N'].map(MESES_ES)
         cuadro = df_r.groupby(['Año', 'Mes_N', 'Mes', 'Tarea'])[u_c].sum().reset_index()
-        st.dataframe(cuadro.sort_values(by=['Año', 'Mes_N'], ascending=False)[['Año', 'Mes', 'Tarea', u_c]], use_container_width=True, hide_index=True)[cite: 1]
+        st.dataframe(cuadro.sort_values(by=['Año', 'Mes_N'], ascending=False)[['Año', 'Mes', 'Tarea', u_c]], use_container_width=True, hide_index=True)
         
         st.write("**Historial para eliminar:**")
         for i, row in df_r.sort_values('Fecha', ascending=False).iterrows():
