@@ -176,7 +176,6 @@ menu = st.sidebar.radio("Navegación", opciones)
 if st.sidebar.button("Cerrar Sesión"):
     st.session_state.clear(); st.rerun()
 
-# Mostrar alerta al inicio si no es admin
 mostrar_alerta_faltante(st.session_state.usuario_actual)
 
 # ===== 7. PANEL DE CONTROL =====
@@ -185,7 +184,7 @@ if "Panel de Control" in menu:
     c1, c2, c3 = st.columns([1,1,2])
     with c1: anio = st.selectbox("Año", [2025, 2026, 2027], index=1)
     with c2: mes = st.selectbox("Mes", list(range(1,13)), format_func=lambda x: MESES_ES[x], index=datetime.now().month-1)
-    with c3: p_sel = st.selectbox("Integrante:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
+    with c3: p_sel = st.selectbox("Integrante Individual:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
 
     df_p = st.session_state.cargas.copy(); df_p['Fecha'] = pd.to_datetime(df_p['Fecha'], errors='coerce')
     
@@ -238,7 +237,7 @@ if "Panel de Control" in menu:
 
     if st.session_state.usuario_actual == "Admin - Ver todo":
         st.divider()
-        st.subheader("🌐 Visión Global del Estudio (Desvío Trimestral)")
+        st.subheader("🌐 Visión Global del Equipo (Desvío Trimestral)")
         hist_global = {}
         for i in range(3):
             m_c = mes - i; a_c = anio
@@ -286,7 +285,6 @@ elif "Cargar" in menu:
     df_h = df_h[df_h[u_c] > 0]
     
     if not df_h.empty:
-        # Resumen mes actual
         df_m = df_h[df_h['Fecha'].dt.month == datetime.now().month]
         if not df_m.empty:
             st.write(f"**Resumen de Tareas - {MESES_ES[datetime.now().month]}**")
@@ -304,10 +302,8 @@ elif "Cargar" in menu:
 elif "Carga Masiva" in menu:
     st.title("📁 Reparto de Horas (Admin)")
     with st.form("f_masiva"):
-        u_m = st.selectbox("Operario", OPERARIOS_FIJOS)
-        t_m = st.selectbox("Tarea", list(COLORES_TAREAS.keys()))
-        f_i = st.date_input("Desde"); f_f = st.date_input("Hasta")
-        h_t = st.number_input("Horas Totales", min_value=0.0)
+        u_m = st.selectbox("Operario", OPERARIOS_FIJOS); t_m = st.selectbox("Tarea", list(COLORES_TAREAS.keys()))
+        f_i = st.date_input("Desde"); f_f = st.date_input("Hasta"); h_t = st.number_input("Horas Totales", min_value=0.0)
         if st.form_submit_button("Distribuir Horas"):
             dias = pd.bdate_range(start=f_i, end=f_f, freq='C', holidays=FERIADOS)
             if len(dias) > 0:
@@ -330,4 +326,3 @@ elif "Protocolo" in menu:
 elif "Reset" in menu:
     if st.text_input("Escriba BORRAR") == "BORRAR":
         if st.button("Eliminar Todo"): guardar_df("Cargas", pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota'])); st.rerun()
-```[cite: 1, 6]
