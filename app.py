@@ -52,10 +52,10 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None, 
 
     if es_protocolo:
         secciones = [
-            ("1. INTRODUCCIÓN Y FINALIDAD", "El objetivo principal de este CRM es transformar nuestra carga de trabajo en datos accionables. En un estudio contable, el tiempo es nuestro recurso más valioso; registrarlo nos permite medir la rentabilidad de cada proceso, detectar cuándo un integrante está saturado y planificar el crecimiento del equipo con bases sólidas. Elegimos sumar precisión para restar incertidumbre.[cite: 2]"),
-            ("2. OBJETIVOS ESTRATÉGICOS", "• <b>Visibilidad:</b> Saber en qué tareas invertimos más tiempo.<br/>• <b>Equilibrio:</b> Evitar cuellos de botella y redistribuir tareas.<br/>• <b>Transparencia:</b> Tener un registro histórico claro frente a auditorías.[cite: 2]"),
-            ("3. PASO A PASO: CARGA Y CONTROL", "<b>• Carga Diaria:</b> Registrar 6 horas diarias antes de las 15:00 hs.<br/><b>• Sinceridad:</b> Usar tareas reales o DISPONIBLE según corresponda.<br/><b>• Inasistencias:</b> Se cargan para restar capacidad neta automáticamente.<br/><b>• Autocontrol:</b> Verificar en el Historial que el total sume 6 hs.<br/><b>• Reunión de Equipo:</b> Analizar el PDF Trimestral grupalmente.[cite: 2]"),
-            ("4. SEMÁFORO DE CAPACIDAD", "• 🟢 <b>Verde (>20%):</b> Espacio para nuevos proyectos.<br/>• 🟡 <b>Amarillo (10-20%):</b> Carga próxima al límite.<br/>• 🔴 <b>Rojo (<10%):</b> Saturación operativa.[cite: 2]")
+            ("1. FINALIDAD Y OBJETIVO", "El objetivo principal es transformar nuestra carga de trabajo en datos accionables. Registrar el tiempo permite medir rentabilidad, detectar saturaciones y planificar el crecimiento.[cite: 2]"),
+            ("2. OBJETIVOS ESTRATÉGICOS", "• <b>Visibilidad:</b> Saber en qué tareas invertimos más tiempo.<br/>• <b>Equilibrio:</b> Evitar cuellos de botella y redistribuir tareas.<br/>• <b>Transparencia:</b> Historial claro de gestiones.[cite: 2]"),
+            ("3. PASO A PASO: CARGA Y CONTROL", "<b>• Registro Diario:</b> Registrar 6 horas diarias antes de las 15:00 hs.<br/><b>• Inasistencias:</b> Cargarlas para descontar capacidad neta automáticamente.<br/><b>• Autocontrol:</b> Verifique que el total sume 6 hs y las notas sean descriptivas.[cite: 2]"),
+            ("4. SEMÁFORO DE CAPACIDAD", "• 🟢 <b>Verde (>20%):</b> Espacio para proyectos.<br/>• 🟡 <b>Amarillo (10-20%):</b> Carga próxima al límite.<br/>• 🔴 <b>Rojo (<10%):</b> Saturación operativa.[cite: 1]")
         ]
         for t, c in secciones:
             story.append(Paragraph(t, estilo_subtitulo))
@@ -85,7 +85,7 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None, 
 
     doc.build(story); buf.seek(0); return buf
 
-# ===== 3. CONEXIÓN =====
+# ===== 3. CONEXIÓN Y DATOS =====
 
 @st.cache_resource
 def conectar():
@@ -125,7 +125,7 @@ if 'cargas' not in st.session_state:
 
 if 'usuario_actual' not in st.session_state: st.session_state.usuario_actual = None
 
-# ===== 4. LOGIN Y NAVEGACIÓN (DEFINICIÓN DE 'MENU') =====
+# ===== 4. LOGIN Y NAVEGACIÓN (CORRECCIÓN NameError) =====
 if st.session_state.usuario_actual is None:
     st.title("🏛️ CRM Grupo Pressacco")
     u = st.selectbox("Usuario:", ["Seleccionar..."] + OPERARIOS_FIJOS + ["Admin - Ver todo"])
@@ -133,7 +133,7 @@ if st.session_state.usuario_actual is None:
         st.session_state.usuario_actual = u; st.rerun()
     st.stop()
 
-# Aquí se define 'menu' ANTES de usarlo en los condicionales
+# Definición de la variable 'menu' ANTES de los bloques if/elif
 opciones = ["📊 Panel de Control", "➕ Cargar Horas", "📁 Carga Masiva", "📜 Protocolo", "⚙️ Reset"] if st.session_state.usuario_actual == "Admin - Ver todo" else ["📊 Panel de Control", "➕ Cargar Mis Horas", "📜 Protocolo"]
 menu = st.sidebar.radio("Navegación", opciones)
 
@@ -153,8 +153,7 @@ def mostrar_alerta_faltante(usuario):
 
 mostrar_alerta_faltante(st.session_state.usuario_actual)
 
-# ===== 6. SECCIONES DEL SISTEMA =====
-
+# ===== 6. PANEL DE CONTROL =====
 if "Panel de Control" in menu:
     st.title("📊 Análisis y Autoevaluación")
     c1, c2, c3 = st.columns([1,1,2])
@@ -221,7 +220,7 @@ if "Panel de Control" in menu:
                     datos_t.append([r['Tarea'], round(r[p_sel], 1), porc])
                 datos_t.append(["TOTAL CARGADO", round(total_bruto, 1), ""])
                 datos_t.append(["TOTAL NETO PRODUCTIVO", round(total_neto, 1), "100%"])
-                pdf_m = generar_pdf_base(f"Reporte Mensual: {p_sel}", f"{MESES_ES[mes]} {anio}[cite: 1]", [("Detalle de Jornada", datos_t)], incluir_grafico=res_ind.set_index('Tarea')[p_sel].to_dict())
+                pdf_m = generar_pdf_base(f"Reporte Mensual Neto: {p_sel}", f"{MESES_ES[mes]} {anio}[cite: 1]", [("Detalle de Jornada", datos_t)], incluir_grafico=res_ind.set_index('Tarea')[p_sel].to_dict())
                 st.download_button("Guardar Mensual", pdf_m, f"Mensual_{p_sel}.pdf")
 
     if st.session_state.usuario_actual == "Admin - Ver todo":
@@ -229,25 +228,25 @@ if "Panel de Control" in menu:
         df_eq_neta = df_act[~df_act['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)].melt(id_vars=['Fecha', 'Tarea'], value_vars=OPERARIOS_FIJOS, var_name='Op', value_name='Hs')
         res_eq_neta = df_eq_neta.groupby('Tarea')['Hs'].sum().reset_index()
         st.plotly_chart(px.pie(res_eq_neta, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title="Total Horas Productivas Equipo"), use_container_width=True)
-        hist_g = {}
-        for i in range(3):
-            m_c = mes - i; a_c = anio
-            if m_c <= 0: m_c += 12; a_c -= 1
-            df_m_g = df_p[(df_p['Fecha'].dt.month == m_c) & (df_p['Fecha'].dt.year == a_c)]
-            hist_g[MESES_ES[m_c]] = df_m_g[~df_m_g['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)][OPERARIOS_FIJOS].sum(axis=1).groupby(df_m_g['Tarea']).sum().to_dict()
-        tareas_g = sorted(list(set([t for m in hist_g for t in hist_g[m].keys()]))); meses_g = list(hist_g.keys())
-        rows_g = []; totales_g = [0.0] * len(meses_g)
-        for t in tareas_g:
-            fila = [t]
-            for idx, m in enumerate(meses_g):
-                val = round(float(hist_g[m].get(t, 0)), 1); fila.append(val); totales_g[idx] += val
-            rows_g.append(fila)
-        rows_g.append(["TOTAL NETO"] + [round(x, 1) for x in totales_g])
-        st.table(pd.DataFrame(rows_g, columns=["Tarea"] + meses_g))
         if st.button("📥 Descargar Reporte Global Trimestral (PDF)"):
-            pdf_g = generar_pdf_base("REPORTE GLOBAL NETO", "Estudio Completo - Grupo Pressacco[cite: 1]", [("Consolidado Productivo", [["Tarea"] + meses_g] + rows_g)], incluir_grafico=res_eq_neta.set_index('Tarea')['Hs'].to_dict())
+            hist_g = {}
+            for i in range(3):
+                m_c = mes - i; a_c = anio
+                if m_c <= 0: m_c += 12; a_c -= 1
+                df_m_g = df_p[(df_p['Fecha'].dt.month == m_c) & (df_p['Fecha'].dt.year == a_c)]
+                hist_g[MESES_ES[m_c]] = df_m_g[~df_m_g['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)][OPERARIOS_FIJOS].sum(axis=1).groupby(df_m_g['Tarea']).sum().to_dict()
+            tareas_g = sorted(list(set([t for m in hist_g for t in hist_g[m].keys()]))); meses_g = list(hist_g.keys())
+            rows_g = []; totales_g = [0.0] * len(meses_g)
+            for t in tareas_g:
+                fila = [t]
+                for idx, m in enumerate(meses_g):
+                    val = round(float(hist_g[m].get(t, 0)), 1); fila.append(val); totales_g[idx] += val
+                rows_g.append(fila)
+            rows_g.append(["TOTAL NETO"] + [round(x, 1) for x in totales_g])
+            pdf_g = generar_pdf_base("REPORTE GLOBAL NETO", "Estudio Completo - Sin Inasistencias[cite: 1]", [("Consolidado Productivo", [["Tarea"] + meses_g] + rows_g)], incluir_grafico=res_eq_neta.set_index('Tarea')['Hs'].to_dict())
             st.download_button("Guardar Reporte Global", pdf_g, "Global_Neto.pdf")
 
+# ===== 7. CARGAR HORAS =====
 elif "Cargar" in menu:
     st.title("➕ Registro de Horas")
     u_c = st.session_state.usuario_actual if st.session_state.usuario_actual != "Admin - Ver todo" else st.selectbox("Persona:", OPERARIOS_FIJOS)
@@ -273,15 +272,15 @@ elif "Cargar" in menu:
             if c2.button("Eliminar", key=f"del_{i}"):
                 st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True); guardar_df("Cargas", st.session_state.cargas); st.rerun()
 
+# ===== 8. PROTOCOLO =====
 elif "Protocolo" in menu:
     st.title("📜 Protocolo de Uso - Grupo Pressacco")
-    st.info("Elegimos sumar[cite: 2]")
     st.markdown("""
     ### 1. Finalidad y Objetivo
-    El objetivo principal es transformar nuestra carga de trabajo en **datos accionables**. Registrar el tiempo permite medir rentabilidad, detectar saturaciones y planificar el crecimiento.[cite: 2]
+    Transformar nuestra carga de trabajo en **datos accionables**. El objetivo es medir capacidad, eficiencia y rentabilidad.[cite: 2]
     
     ### 2. Paso a Paso: Carga y Control
-    *   **Registro Diario:** Cada integrante debe registrar **6 horas diarias** antes de las **15:00 hs**.
+    *   **Registro Diario:** Registrar **6 horas diarias** antes de las **15:00 hs**.
     *   **Inasistencias:** Cargarlas como tal para descontar capacidad neta automáticamente.
     *   **Autocontrol:** Verificar que el total sume 6 hs y las notas sean descriptivas.[cite: 2]
     """)
@@ -289,6 +288,7 @@ elif "Protocolo" in menu:
         pdf = generar_pdf_base("PROTOCOLO DE USO - CRM", "Manual de Procedimientos y Guía Completa[cite: 2]", [], es_protocolo=True)
         st.download_button("Guardar Protocolo Maestro", pdf, "Protocolo_Pressacco.pdf")
 
+# ===== 9. CARGA MASIVA =====
 elif "Carga Masiva" in menu:
     st.title("📁 Reparto de Horas (Admin)")
     with st.form("f_m"):
@@ -303,6 +303,7 @@ elif "Carga Masiva" in menu:
                     filas.append(f)
                 st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame(filas)], ignore_index=True); guardar_df("Cargas", st.session_state.cargas); st.rerun()
 
+# ===== 10. RESET =====
 elif "Reset" in menu:
     if st.text_input("Escriba BORRAR") == "BORRAR":
         if st.button("Eliminar Todo"): guardar_df("Cargas", pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota'])); st.rerun()
