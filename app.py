@@ -224,7 +224,7 @@ elif menu == "Carga Masiva":
                 st.success("Carga masiva completada")
                 st.rerun()
 
-# ===== 10. CARGAR HORAS Y REGISTROS =====
+# ===== 10. CARGAR HORAS Y REGISTROS (HISTORIAL) =====
 elif "Cargar" in menu:
     st.title("Cargar Horas")
     u_c = st.selectbox("Persona:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
@@ -243,9 +243,26 @@ elif "Cargar" in menu:
             st.rerun()
 
     st.divider()
-    st.subheader(f"Historial de Cargas para {u_c}")
-    ver_solo_dia = st.checkbox("Ver solo el día seleccionado arriba")
     
+    # --- CUADRO DE RESUMEN POR MES ---
+    st.subheader(f"Resumen Mensual por Tarea para {u_c}")
+    df_res = st.session_state.cargas.copy()
+    df_res['Fecha'] = pd.to_datetime(df_res['Fecha'], errors='coerce')
+    df_res = df_res[df_res[u_c] > 0]
+    
+    if not df_res.empty:
+        df_res['Mes_N'] = df_res['Fecha'].dt.month
+        df_res['Año'] = df_res['Fecha'].dt.year
+        df_res['Mes'] = df_res['Mes_N'].map(MESES_ES)
+        cuadro = df_res.groupby(['Año', 'Mes', 'Tarea'])[u_c].sum().reset_index()
+        cuadro.columns = ['Año', 'Mes', 'Tarea', 'Hs Totales']
+        st.dataframe(cuadro.sort_values(['Año', 'Hs Totales'], ascending=False), use_container_width=True, hide_index=True)
+
+    st.divider()
+    
+    # --- HISTORIAL DETALLADO ---
+    st.subheader(f"Historial de Cargas Detallado para {u_c}")
+    ver_solo_dia = st.checkbox("Ver solo el día seleccionado arriba")
     df_hist = st.session_state.cargas.copy()
     df_hist['Fecha'] = pd.to_datetime(df_hist['Fecha'], errors='coerce')
     df_hist = df_hist[df_hist[u_c] > 0]
