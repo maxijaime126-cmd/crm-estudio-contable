@@ -28,7 +28,7 @@ COLORES_TAREAS = {
 }
 
 OPERARIOS_FIJOS = ["Natalia", "Maximiliano", "Athina", "Johana"]
-HORAS_DIA_LABORAL = 6[cite: 1]
+HORAS_DIA_LABORAL = 6
 
 TAREAS_DISPONIBLE_TIPO = [
     "DISPONIBLE",
@@ -79,7 +79,11 @@ def generar_pdf_reporte(nombre, mes, anio, total_hs, eficiencia, estado, df_tare
         ["Estado", estado]
     ]
     t = Table(data, colWidths=[200, 200])
-    t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0), colors.grey), ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke), ('GRID',(0,0),(-1,-1),1,colors.black)]))
+    t.setStyle(TableStyle([
+        ('BACKGROUND',(0,0),(-1,0), colors.grey),
+        ('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke),
+        ('GRID',(0,0),(-1,-1),1,colors.black)
+    ]))
     story.append(t)
     story.append(Spacer(1, 20))
     
@@ -127,7 +131,8 @@ def guardar_df(nombre_hoja, df):
         ws.update([df_copy.columns.values.tolist()] + df_copy.values.tolist())
         st.cache_data.clear()
         return True
-    except Exception: return False
+    except Exception:
+        return False
 
 # ===== 6. FUNCIONES DE CAPACIDAD =====
 def calcular_dias_habiles(fecha_inicio, fecha_fin):
@@ -136,7 +141,10 @@ def calcular_dias_habiles(fecha_inicio, fecha_fin):
 
 def calcular_capacidad_mensual(anio, mes):
     inicio = datetime(anio, mes, 1)
-    fin = (datetime(anio, mes + 1, 1) if mes < 12 else datetime(anio + 1, 1, 1)) - timedelta(days=1)
+    if mes == 12:
+        fin = datetime(anio + 1, 1, 1) - timedelta(days=1)
+    else:
+        fin = datetime(anio, mes + 1, 1) - timedelta(days=1)
     dias_h = calcular_dias_habiles(inicio.date(), fin.date())
     return dias_h, dias_h * HORAS_DIA_LABORAL
 
@@ -163,9 +171,9 @@ menu = st.sidebar.radio("Menú", menu_opciones)
 # ===== 9. PANEL DE CONTROL =====
 if menu == "Panel de Control":
     st.title("Panel de Control - Ocupación")
-    c_a, c_m = st.columns(2)
-    with c_a: anio = st.selectbox("Año", [2025, 2026, 2027], index=1)
-    with c_m: mes = st.selectbox("Mes", list(range(1,13)), format_func=lambda x: MESES_ES[x], index=datetime.now().month - 1)
+    col_a, col_m = st.columns(2)
+    with col_a: anio = st.selectbox("Año", [2025, 2026, 2027], index=1)
+    with col_m: mes = st.selectbox("Mes", list(range(1,13)), format_func=lambda x: MESES_ES[x], index=datetime.now().month - 1)
 
     dias_h, cap_base = calcular_capacidad_mensual(anio, mes)
     st.info(f"**{MESES_ES[mes]} {anio}**: {dias_h} días hábiles. Capacidad teórica: {cap_base} hs.")
@@ -182,16 +190,16 @@ if menu == "Panel de Control":
             persona_sel = st.selectbox("Operario:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
             df_ind = df_melt[df_melt['Operario'] == persona_sel]
             
-            res_t = df_ind.groupby('Tarea')['Horas'].sum().round(1).reset_index()[cite: 1]
+            res_t = df_ind.groupby('Tarea')['Horas'].sum().round(1).reset_index()
             total_c = res_t['Horas'].sum().round(1)
             
             hs_prod = df_ind[~df_ind['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)]['Horas'].sum().round(1)
-            eficiencia = (hs_prod / cap_base * 100) if cap_base > 0 else 0[cite: 1]
+            eficiencia = (hs_prod / cap_base * 100) if cap_base > 0 else 0
             
             hs_libres = df_ind[df_ind['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)]['Horas'].sum().round(1)
             porc_libres = (hs_libres / total_c * 100) if total_c > 0 else 0
             
-            # CORRECCIÓN DE LÍMITE: 20.0% ahora es Verde (🟢 OK)[cite: 1]
+            # Ajuste de límites: 20% exacto es Verde
             if porc_libres >= 20.0: color_s = "🟢 OK"
             elif porc_libres >= 10.0: color_s = "🟡 Atención"
             else: color_s = "🔴 Al límite"
@@ -203,13 +211,13 @@ if menu == "Panel de Control":
                 st.plotly_chart(fig, use_container_width=True)
             with col_m:
                 st.metric("Total Cargado", f"{total_c} hs")
-                st.metric("Eficiencia Operativa", f"{eficiencia:.1f}%")[cite: 1]
+                st.metric("Eficiencia Operativa", f"{eficiencia:.1f}%")
                 st.metric("Disponibilidad", f"{porc_libres:.1f}%")
                 st.subheader(f"Estado: {color_s}")
                 pdf_file = generar_pdf_reporte(persona_sel, mes, anio, total_c, eficiencia, color_s, res_t)
                 st.download_button("📄 Reporte PDF", data=pdf_file, file_name=f"Reporte_{persona_sel}.pdf")
 
-# ===== 10. CARGA MASIVA (REINCORPORADA) =====
+# ===== 10. CARGA MASIVA =====
 elif menu == "Carga Masiva":
     st.title("Carga Masiva de Horas (Admin)")
     with st.form("form_masiva"):
@@ -257,7 +265,7 @@ elif "Cargar" in menu:
                 st.rerun()
 
 elif menu == "Resetear Datos":
-    st.title("⚠️ Zona de Peligro")
+    st.title("Zona de Peligro")
     if st.text_input("Escriba BORRAR para confirmar") == "BORRAR":
         if st.button("Eliminar todo"):
             guardar_df("Cargas", pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS))
