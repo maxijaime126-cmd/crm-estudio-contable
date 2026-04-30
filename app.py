@@ -21,10 +21,15 @@ COLORES_TAREAS = {
 
 OPERARIOS_FIJOS = ["Natalia", "Maximiliano", "Athina", "Johana"]
 HORAS_DIA_LABORAL = 6
+# Lógica corregida: Solo estas dos suman como "disponible"
+TAREAS_DISPONIBILIDAD_REAL = ["DISPONIBLE", "PLANIFICACIONES/ORGANIZACIÓN/PROCEDIMIENTO S/INFORMES"]
+# Estas restan de la capacidad total del mes
+TAREAS_DESCUENTO_CAPACIDAD = ["INASISTENCIA POR EXAMEN O TRAMITE"]
+
 MESES_ES = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
             7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
 
-# ===== 2. FUNCIONES PDF MEJORADAS =====
+# ===== 2. FUNCIONES PDF =====
 
 def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None, es_protocolo=False):
     from reportlab.lib.pagesizes import letter
@@ -58,11 +63,9 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None, 
 
     if es_protocolo:
         contenido = [
-            ("<b>¿Para qué sirve este CRM?</b>", "Para medir nuestra capacidad real y eficiencia. Si no registramos las horas, no sabemos cuánto nos lleva cada cliente o tarea. Con este sistema, tenemos la prueba de nuestra carga de trabajo, detectamos cuellos de botella y podemos planificar mejor el mes."),
-            ("<b>INGRESO Y CARGA - El registro diario</b>", "Acá es donde alimentamos el sistema. Sin carga diaria, los gráficos dan error.<br/>• <b>Usuario:</b> Obligatorio entrar con tu nombre. Nunca cargues en el de un compañero.<br/>• <b>Tarea:</b> Elegí la que realmente hiciste.<br/>• <b>Horas:</b> El total del día debe ser siempre de 6 horas.<br/>• <b>Nota:</b> Escribí brevemente qué hiciste."),
-            ("<b>PANEL DE CONTROL - El espejo del equipo</b>", "Acá analizamos resultados. Podés filtrar por mes y descargar tus reportes mensuales o trimestrales para las reuniones."),
-            ("<b>REGLAS DE ORO</b>", "• Carga antes de las 15:00 hs.<br/>• Nunca toques el Google Sheets a mano.<br/>• Sinceridad: Si no tuviste tareas, cargá DISPONIBLE."),
-            ("<b>FLUJO DE TRABAJO DIARIO</b>", "1. Al ingresar mirá el cartel de aviso.<br/>2. Durante el día registrá tareas importantes.<br/>3. Al cierre verificá que sumen 6 horas.")
+            ("<b>¿Para qué sirve este CRM?</b>", "Para medir nuestra capacidad real y eficiencia. Si no registramos las horas, no sabemos cuánto nos lleva cada cliente o tarea."),
+            ("<b>INGRESO Y CARGA - El registro diario</b>", "Carga diaria de 6 horas obligatorias.<br/>• <b>Usuario:</b> Propio.<br/>• <b>Horas:</b> Suma 6hs."),
+            ("<b>REGLAS DE ORO</b>", "• Carga antes de las 15:00 hs.<br/>• Sinceridad: Si no tuviste tareas, cargá DISPONIBLE.")
         ]
         for t, c in contenido:
             story.append(Paragraph(t, s['Heading3']))
@@ -169,7 +172,7 @@ mostrar_alerta_faltante(st.session_state.usuario_actual)
 
 # ===== 7. PANEL DE CONTROL =====
 if "Panel de Control" in menu:
-    st.title("📊 Análisis de Ocupación")
+    st.title("📊 Análisis y Autoevaluación")
     c1, c2, c3 = st.columns([1,1,2])
     with c1: anio = st.selectbox("Año", [2025, 2026, 2027], index=1)
     with c2: mes = st.selectbox("Mes", list(range(1,13)), format_func=lambda x: MESES_ES[x], index=datetime.now().month-1)
@@ -178,12 +181,35 @@ if "Panel de Control" in menu:
     df_p = st.session_state.cargas.copy(); df_p['Fecha'] = pd.to_datetime(df_p['Fecha'], errors='coerce')
     
     st.subheader(f"📈 Comparativa Trimestral - {p_sel}")
-    hist_pdf = {}
+    comp_list = []; hist_pdf = {}
     for i in range(3):
         m_c = mes - i; a_c = anio
         if m_c <= 0: m_c += 12; a_c -= 1
+        
+        ini = datetime(a_c, m_c, 1).date()
+        fin = (datetime(a_c, m_c+1, 1) if m_c < 12 else datetime(a_c+1, 1, 1)).date() - timedelta(days=1)
+        # Capacidad teórica según calendario
+        cap_teorica = len(pd.bdate_range(start=ini, end=fin, freq='C', holidays=FERIADOS)) * HORAS_DIA_LABORAL
+        
         df_m = df_p[(df_p['Fecha'].dt.month == m_c) & (df_p['Fecha'].dt.year == a_c)]
+        
+        # Horas que restan capacidad (Inasistencias)
+        h_inasistencia = df_m[df_m['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)][p_sel].sum()
+        # Capacidad real neta
+        cap_neta = cap_teorica - h_inasistencia
+        
+        total_cargado = round(df_m[p_sel].sum(), 1)
+        
+        # Disponibilidad pura (Solo Disponible y Planificaciones)
+        h_disp_pura = df_m[df_m['Tarea'].isin(TAREAS_DISPONIBILIDAD_REAL)][p_sel].sum()
+        
+        dispon_val = (h_disp_pura / cap_neta * 100) if cap_neta > 0 else 0
+        semaforo = "🟢 (Libre)" if dispon_val > 20 else "🟡 (Atención)" if dispon_val >= 10 else "🔴 (Preocupación)"
+        
+        comp_list.append({"Mes": MESES_ES[m_c], "Carga Efectiva": f"{total_cargado} hs", "Disponibilidad": f"{dispon_val:.1f}%", "Estado": semaforo})
         hist_pdf[MESES_ES[m_c]] = df_m.groupby('Tarea')[p_sel].sum().to_dict()
+
+    st.table(pd.DataFrame(comp_list))
     
     if st.button("📥 Descargar Autoevaluación Trimestral (PDF)"):
         tareas_u = sorted(list(set([t for m in hist_pdf for t in hist_pdf[m].keys()])))
@@ -205,46 +231,22 @@ if "Panel de Control" in menu:
     
     if not res_ind.empty:
         col_p, col_m = st.columns([2,1])
-        with col_p: st.plotly_chart(px.pie(res_ind, values=p_sel, names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS), use_container_width=True)
+        with col_p: st.plotly_chart(px.pie(res_ind, values=p_sel, names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title=f"Distribución de Horas - {p_sel}"), use_container_width=True)
         with col_m:
+            disp_act = float(comp_list[0]["Disponibilidad"].replace('%',''))
+            color_v = "🟢" if disp_act > 20 else "🟡" if disp_act >= 10 else "🔴"
+            
+            st.metric("Estado de Capacidad", comp_list[0]["Estado"], delta=color_v)
+            st.metric("Disponibilidad Pura", comp_list[0]["Disponibilidad"])
+            st.metric("Horas Totales", comp_list[0]["Carga Efectiva"])
+            
             if st.button("📥 Descargar Reporte Mensual (PDF)"):
                 tot_h = res_ind[p_sel].sum()
                 datos_t = [["Tarea", "Horas", "%"]] + [[r['Tarea'], round(r[p_sel], 1), f"{round((r[p_sel]/tot_h)*100, 1)}%"] for _, r in res_ind.iterrows()] + [["TOTAL", round(tot_h, 1), "100%"]]
                 pdf_m = generar_pdf_base(f"Reporte Mensual: {p_sel}", f"{MESES_ES[mes]} {anio}", [("Detalle", datos_t)], incluir_grafico=res_ind.set_index('Tarea')[p_sel].to_dict())
                 st.download_button("Guardar Mensual", pdf_m, f"Mensual_{p_sel}.pdf")
 
-    if st.session_state.usuario_actual == "Admin - Ver todo":
-        st.divider(); st.subheader("🌐 Visión Global del Estudio (Desvío Trimestral)")
-        hist_global = {}
-        for i in range(3):
-            m_c = mes - i; a_c = anio
-            if m_c <= 0: m_c += 12; a_c -= 1
-            df_m_g = df_p[(df_p['Fecha'].dt.month == m_c) & (df_p['Fecha'].dt.year == a_c)]
-            hist_global[MESES_ES[m_c]] = df_m_g[OPERARIOS_FIJOS].sum(axis=1).groupby(df_m_g['Tarea']).sum().to_dict()
-        
-        tareas_g = sorted(list(set([t for m in hist_global for t in hist_global[m].keys()])))
-        meses_g = list(hist_global.keys())
-        rows_g = []; totales_g = [0.0] * len(meses_g)
-        for t in tareas_g:
-            fila = [t]
-            for idx, m in enumerate(meses_g):
-                val = round(float(hist_global[m].get(t, 0)), 1); fila.append(val); totales_g[idx] += val
-            rows_g.append(fila)
-        rows_g.append(["TOTAL"] + [round(x, 1) for x in totales_g])
-        st.table(pd.DataFrame(rows_g, columns=["Tarea"] + meses_g))
-        
-        if st.button("📥 Descargar Reporte Global Trimestral (PDF)"):
-            pdf_g = generar_pdf_base("Reporte Global Trimestral", "Estudio Completo", [("Totales de Equipo", [["Tarea"] + meses_g] + rows_g)])
-            st.download_button("Guardar Global", pdf_g, "Global_Trimestral.pdf")
-
-# ===== 8. PROTOCOLO =====
-elif "Protocolo" in menu:
-    st.title("📜 Protocolo de Uso - Grupo Pressacco")
-    if st.button("📥 Descargar Guía Maestra (PDF)"):
-        pdf_p = generar_pdf_base("PROTOCOLO DE USO - CRM", "Guía Completa de Funcionamiento", [], es_protocolo=True)
-        st.download_button("Guardar Protocolo", pdf_p, "Protocolo_Pressacco.pdf")
-
-# ===== 9. CARGAR HORAS =====
+# ===== 8. CARGAR HORAS =====
 elif "Cargar" in menu:
     st.title("➕ Registro de Horas")
     u_c = st.session_state.usuario_actual if st.session_state.usuario_actual != "Admin - Ver todo" else st.selectbox("Persona:", OPERARIOS_FIJOS)
@@ -267,23 +269,3 @@ elif "Cargar" in menu:
             if c2.button("Eliminar", key=f"del_{i}"):
                 st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True)
                 guardar_df("Cargas", st.session_state.cargas); st.rerun()
-
-# ===== 10. ADMINISTRACIÓN =====
-elif "Carga Masiva" in menu:
-    st.title("📁 Reparto de Horas (Admin)")
-    with st.form("f_masiva"):
-        u_m = st.selectbox("Operario", OPERARIOS_FIJOS); t_m = st.selectbox("Tarea", list(COLORES_TAREAS.keys())); f_i = st.date_input("Desde"); f_f = st.date_input("Hasta"); h_t = st.number_input("Horas Totales", min_value=0.0)
-        if st.form_submit_button("Distribuir Horas"):
-            dias = pd.bdate_range(start=f_i, end=f_f, freq='C', holidays=FERIADOS)
-            if len(dias) > 0:
-                h_d = round(h_t / len(dias), 2); filas = []
-                for d in dias:
-                    f = {'Fecha': d, 'Tarea': t_m, 'Nota': 'Carga Masiva'}
-                    for o in OPERARIOS_FIJOS: f[o] = h_d if o == u_m else 0
-                    filas.append(f)
-                st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame(filas)], ignore_index=True)
-                guardar_df("Cargas", st.session_state.cargas); st.success("Carga masiva lista"); time.sleep(1); st.rerun()
-
-elif "Reset" in menu:
-    if st.text_input("Escriba BORRAR") == "BORRAR":
-        if st.button("Eliminar Todo"): guardar_df("Cargas", pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota'])); st.rerun()
