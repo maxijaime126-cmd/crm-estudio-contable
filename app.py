@@ -25,7 +25,7 @@ TAREAS_DISPONIBLE_TIPO = ["DISPONIBLE", "PLANIFICACIONES/ORGANIZACIÓN/PROCEDIMI
 MESES_ES = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
             7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
 
-# ===== 2. FUNCIONES PDF (CON TABLA DE PORCENTAJES Y TOTALES) =====
+# ===== 2. FUNCIONES PDF MEJORADAS =====
 
 def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
     from reportlab.lib.pagesizes import letter
@@ -61,36 +61,27 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
         d = Drawing(450, 200)
         pc = Pie()
         pc.x = 50; pc.y = 25; pc.width = 130; pc.height = 130
-        
         lista_colores = [colors.magenta, colors.deepskyblue, colors.lightpink, colors.yellow, 
                          colors.whitesmoke, colors.lightblue, colors.lavender, colors.bisque, 
                          colors.turquoise, colors.lime, colors.hotpink]
-
         total_h = sum(incluir_grafico.values())
         pc.data = [round(float(v), 1) for v in incluir_grafico.values()]
         pc.labels = [f"{round((v/total_h)*100, 1)}%" if total_h > 0 else "0%" for v in incluir_grafico.values()]
-        
         for i in range(len(pc.data)):
             pc.slices[i].fillColor = lista_colores[i % len(lista_colores)]
-            
         leg = Legend()
         leg.x = 220; leg.y = 150; leg.alignment = 'right'; leg.columnMaximum = 12; leg.fontSize = 7
         leg.colorNamePairs = [(lista_colores[i % len(lista_colores)], k) for i, k in enumerate(incluir_grafico.keys())]
-        
         d.add(pc); d.add(leg); story.append(d); story.append(Spacer(1, 10))
 
     for titulo_tabla, data in datos_tablas:
         if titulo_tabla:
             story.append(Paragraph(titulo_tabla, s['Heading3']))
-        
-        # Procesar filas para wrap y negrita en el total
         data_p = []
         for i, fila in enumerate(data):
-            estilo = estilo_negrita if i == len(data)-1 and fila[0] == "TOTAL" else estilo_celda
+            estilo = estilo_negrita if str(fila[0]).upper() == "TOTAL" else estilo_celda
             data_p.append([Paragraph(str(c), estilo) for c in fila])
-            
-        col_w = [2.8*inch, 0.8*inch, 0.8*inch] if len(data[0]) == 3 else [2.8*inch] + [0.8*inch]*(len(data[0])-1)
-        
+        col_w = [2.5*inch] + [0.8*inch]*(len(data[0])-1)
         t = Table(data_p, colWidths=col_w)
         estilo_t = [
             ('BACKGROUND', (0, 0), (-1, 0), color_celeste),
@@ -98,19 +89,16 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None):
             ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
             ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ]
-        # Fondo gris para la fila de TOTAL
-        if data[-1][0] == "TOTAL":
+        if str(data[-1][0]).upper() == "TOTAL":
             estilo_t.append(('BACKGROUND', (0, -1), (-1, -1), colors.lightgrey))
-            
         t.setStyle(TableStyle(estilo_t))
         story.append(t)
         story.append(Spacer(1, 15))
-
     doc.build(story)
     buf.seek(0)
     return buf
 
-# ===== 3. LÓGICA DE DATOS =====
+# ===== 3. CONEXIÓN Y DATOS =====
 
 @st.cache_resource
 def conectar():
@@ -174,11 +162,12 @@ if "Panel de Control" in menu:
     c1, c2, c3 = st.columns([1,1,2])
     with c1: anio = st.selectbox("Año", [2025, 2026, 2027], index=1)
     with c2: mes = st.selectbox("Mes", list(range(1,13)), format_func=lambda x: MESES_ES[x], index=datetime.now().month-1)
-    with c3: p_sel = st.selectbox("Integrante Individual:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
+    with c3: p_sel = st.selectbox("Integrante:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
 
     df_p = st.session_state.cargas.copy(); df_p['Fecha'] = pd.to_datetime(df_p['Fecha'], errors='coerce')
     
-    # Comparativa Trimestral
+    # --- COMPARATIVA TRIMESTRAL ---
+    st.subheader(f"📈 Comparativa Trimestral - {p_sel}")
     comp_list = []; hist_pdf = {}
     for i in range(3):
         m_c = mes - i; a_c = anio
@@ -188,14 +177,21 @@ if "Panel de Control" in menu:
         comp_list.append({"Mes": MESES_ES[m_c], "Total": f"{total} hs"})
         hist_pdf[MESES_ES[m_c]] = df_m.groupby('Tarea')[p_sel].sum().to_dict()
 
-    st.subheader(f"📈 Comparativa Trimestral - {p_sel}")
     st.table(pd.DataFrame(comp_list))
     
     if st.button("📥 Descargar Autoevaluación Trimestral (PDF)"):
         tareas_u = sorted(list(set([t for m in hist_pdf for t in hist_pdf[m].keys()])))
         meses_n = list(hist_pdf.keys())
         header = ["Tarea"] + meses_n
-        rows = [[t] + [round(float(hist_pdf[m].get(t, 0)), 1) for m in meses_n] for t in tareas_u]
+        rows = []
+        totales_mes = [0.0] * len(meses_n)
+        for t in tareas_u:
+            fila = [t]
+            for idx, m in enumerate(meses_n):
+                val = round(float(hist_pdf[m].get(t, 0)), 1)
+                fila.append(val); totales_mes[idx] += val
+            rows.append(fila)
+        rows.append(["TOTAL"] + [round(x, 1) for x in totales_mes])
         pdf_t = generar_pdf_base(f"Autoevaluación Trimestral: {p_sel}", "Comparativa de horas por mes", [("Desvío por Tarea", [header] + rows)])
         st.download_button("Guardar Trimestral", pdf_t, f"Trimestral_{p_sel}.pdf")
 
@@ -211,35 +207,44 @@ if "Panel de Control" in menu:
         if st.button("📥 Reporte Mensual Individual (PDF)"):
             tot_h = res_ind[p_sel].sum()
             dict_pie = res_ind.set_index('Tarea')[p_sel].to_dict()
-            # Tabla con Horas y %
             datos_t = [["Tarea", "Horas", "%"]]
             for _, r in res_ind.iterrows():
                 porc = f"{round((r[p_sel]/tot_h)*100, 1)}%" if tot_h > 0 else "0%"
                 datos_t.append([r['Tarea'], round(r[p_sel], 1), porc])
             datos_t.append(["TOTAL", round(tot_h, 1), "100%"])
-            
             pdf_m = generar_pdf_base(f"Reporte Mensual: {p_sel}", f"{MESES_ES[mes]} {anio}", [("Detalle", datos_t)], incluir_grafico=dict_pie)
             st.download_button("Guardar Mensual", pdf_m, f"Mensual_{p_sel}.pdf")
 
     if st.session_state.usuario_actual == "Admin - Ver todo":
         st.divider()
-        st.subheader("🌐 Visión Global del Estudio")
-        df_eq = df_act.melt(id_vars=['Fecha', 'Tarea'], value_vars=OPERARIOS_FIJOS, var_name='Op', value_name='Hs')
-        res_eq = df_eq.groupby('Tarea')['Hs'].sum().reset_index()
-        st.plotly_chart(px.pie(res_eq, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title="Total Horas Estudio"), use_container_width=True)
-        if st.button("📥 Descargar Reporte Global (PDF)"):
-            tot_g = res_eq['Hs'].sum()
-            dict_g = res_eq.set_index('Tarea')['Hs'].to_dict()
-            datos_g = [["Tarea", "Horas", "%"]]
-            for t, h in dict_g.items():
-                porc = f"{round((h/tot_g)*100, 1)}%" if tot_g > 0 else "0%"
-                datos_g.append([t, round(h, 1), porc])
-            datos_g.append(["TOTAL", round(tot_g, 1), "100%"])
-            
-            pdf_g = generar_pdf_base("Reporte Global de Equipo", f"Estudio Completo - {MESES_ES[mes]}", [("Totales", datos_g)], incluir_grafico=dict_g)
-            st.download_button("Guardar Global", pdf_g, "Reporte_Global.pdf")
+        st.subheader("🌐 Visión Global del Estudio (Desvío Trimestral)")
+        # Lógica global trimestral para Admin
+        hist_global = {}
+        for i in range(3):
+            m_c = mes - i; a_c = anio
+            if m_c <= 0: m_c += 12; a_c -= 1
+            df_m_g = df_p[(df_p['Fecha'].dt.month == m_c) & (df_p['Fecha'].dt.year == a_c)]
+            hist_global[MESES_ES[m_c]] = df_m_g[OPERARIOS_FIJOS].sum(axis=1).groupby(df_m_g['Tarea']).sum().to_dict()
+        
+        tareas_g = sorted(list(set([t for m in hist_global for t in hist_global[m].keys()])))
+        meses_g = list(hist_global.keys())
+        header_g = ["Tarea"] + meses_g
+        rows_g = []
+        totales_g = [0.0] * len(meses_g)
+        for t in tareas_g:
+            fila = [t]
+            for idx, m in enumerate(meses_g):
+                val = round(float(hist_global[m].get(t, 0)), 1)
+                fila.append(val); totales_g[idx] += val
+            rows_g.append(fila)
+        rows_g.append(["TOTAL"] + [round(x, 1) for x in totales_g])
+        st.table(pd.DataFrame(rows_g[1:], columns=header_g))
+        
+        if st.button("📥 Descargar Reporte Global Trimestral (PDF)"):
+            pdf_g = generar_pdf_base("Reporte Global Trimestral", "Comparativa del estudio completo", [("Totales de Equipo", [header_g] + rows_g)])
+            st.download_button("Guardar Global", pdf_g, "Global_Trimestral.pdf")
 
-# (Resto de secciones sin cambios)
+# (Secciones Cargar, Masiva y Reset se mantienen iguales para asegurar estabilidad)
 elif "Cargar" in menu:
     st.title("➕ Registro de Horas")
     u_c = st.session_state.usuario_actual if st.session_state.usuario_actual != "Admin - Ver todo" else st.selectbox("Persona:", OPERARIOS_FIJOS)
