@@ -23,7 +23,6 @@ OPERARIOS_FIJOS = ["Natalia", "Maximiliano", "Athina", "Johana"]
 HORAS_DIA_LABORAL = 6
 TAREAS_DISPONIBILIDAD_REAL = ["DISPONIBLE", "PLANIFICACIONES/ORGANIZACIÓN/PROCEDIMIENTO S/INFORMES"]
 TAREAS_DESCUENTO_CAPACIDAD = ["INASISTENCIA POR EXAMEN O TRAMITE"]
-
 MESES_ES = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
             7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
 
@@ -52,10 +51,10 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None, 
 
     if es_protocolo:
         contenido = [
-            ("<b>¿Para qué sirve este CRM?</b>", "Para medir capacidad real y eficiencia. Detectar cuellos de botella y planificar mejor el mes."),
-            ("<b>INGRESO Y CARGA</b>", "Carga diaria de 6 horas obligatorias. Las inasistencias se detallan pero descuentan capacidad neta."),
-            ("<b>DISPONIBILIDAD</b>", "Se mide sobre la capacidad neta. >20% Verde, 10-20% Amarillo, <10% Rojo."),
-            ("<b>REGLAS DE ORO</b>", "• Usar usuario propio. • Sinceridad total. • Carga antes de las 15:00 hs.")
+            ("<b>1. FINALIDAD Y OBJETIVO</b>", "Transformar nuestra carga de trabajo en datos accionables para optimizar el rendimiento del estudio y asegurar un equilibrio saludable en las tareas del equipo."),
+            ("<b>2. REGISTRO DIARIO</b>", "Cada integrante debe registrar 6 horas diarias antes de las 15:00 hs. Las inasistencias deben cargarse para descontar capacidad neta y no afectar la eficiencia individual."),
+            ("<b>3. SEMÁFORO DE CAPACIDAD</b>", "• 🟢 Verde (>20%): Espacio para nuevos proyectos. • 🟡 Amarillo (10-20%): Carga próxima al límite. • 🔴 Rojo (<10%): Saturación operativa."),
+            ("<b>4. REGLAS DE ORO</b>", "• Usar usuario propio. • Cargar tareas reales (no aproximadas). • Prohibido editar Google Sheets manualmente.")
         ]
         for t, c in contenido:
             story.append(Paragraph(t, s['Heading3'])); story.append(Paragraph(c, estilo_cuerpo)); story.append(Spacer(1, 10))
@@ -199,7 +198,7 @@ if "Panel de Control" in menu:
     if not res_ind.empty:
         col_p, col_m = st.columns([2,1])
         res_neta_grafico = res_ind[~res_ind['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)]
-        with col_p: st.plotly_chart(px.pie(res_neta_grafico, values=p_sel, names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title=f"Eficiencia Real (Sin Inasistencias) - {p_sel}"), use_container_width=True)
+        with col_p: st.plotly_chart(px.pie(res_neta_grafico, values=p_sel, names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title=f"Eficiencia Real - {p_sel}"), use_container_width=True)
         with col_m:
             disp_act = float(comp_list[0]["Disponibilidad"].replace('%',''))
             color_v = "🟢" if disp_act > 20 else "🟡" if disp_act >= 10 else "🔴"
@@ -224,7 +223,6 @@ if "Panel de Control" in menu:
         df_eq_neta = df_act[~df_act['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)].melt(id_vars=['Fecha', 'Tarea'], value_vars=OPERARIOS_FIJOS, var_name='Op', value_name='Hs')
         res_eq_neta = df_eq_neta.groupby('Tarea')['Hs'].sum().reset_index()
         st.plotly_chart(px.pie(res_eq_neta, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title="Total Horas Productivas Equipo"), use_container_width=True)
-        # Historial Global Trimestral Neto
         hist_g = {}
         for i in range(3):
             m_c = mes - i; a_c = anio
@@ -241,7 +239,7 @@ if "Panel de Control" in menu:
         rows_g.append(["TOTAL NETO"] + [round(x, 1) for x in totales_g])
         st.table(pd.DataFrame(rows_g, columns=["Tarea"] + meses_g))
         if st.button("📥 Descargar Reporte Global Trimestral (PDF)"):
-            pdf_g = generar_pdf_base("REPORTE GLOBAL NETO", "Estudio Completo - Sin Inasistencias", [("Consolidado Productivo", [["Tarea"] + meses_g] + rows_g)], incluir_grafico=res_eq_neta.set_index('Tarea')['Hs'].to_dict())
+            pdf_g = generar_pdf_base("REPORTE GLOBAL NETO", "Estudio Completo - Grupo Pressacco", [("Consolidado Productivo", [["Tarea"] + meses_g] + rows_g)], incluir_grafico=res_eq_neta.set_index('Tarea')['Hs'].to_dict())
             st.download_button("Guardar Reporte Global", pdf_g, "Global_Neto.pdf")
 
 # ===== 8. CARGAR HORAS =====
@@ -255,7 +253,6 @@ elif "Cargar" in menu:
             for op in OPERARIOS_FIJOS: nueva[op] = f_h if op == u_c else 0
             st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame([nueva])], ignore_index=True)
             guardar_df("Cargas", st.session_state.cargas); st.success("¡Guardado!"); time.sleep(1); st.rerun()
-    
     st.divider(); st.subheader("📋 Historial y Consulta")
     mes_filt = st.selectbox("Consultar Mes:", list(range(1,13)), format_func=lambda x: MESES_ES[x], index=datetime.now().month-1)
     df_h = st.session_state.cargas.copy(); df_h['Fecha'] = pd.to_datetime(df_h['Fecha'], errors='coerce')
@@ -271,16 +268,29 @@ elif "Cargar" in menu:
             if c2.button("Eliminar", key=f"del_{i}"):
                 st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True); guardar_df("Cargas", st.session_state.cargas); st.rerun()
 
-# ===== 9. PROTOCOLO (Sujeto a Restauración) =====
+# ===== 9. PROTOCOLO =====
 elif "Protocolo" in menu:
-    st.title("📜 Protocolo de Uso")
-    st.markdown("### ¿Para qué sirve este CRM?")
-    st.write("Para medir capacidad real y eficiencia. Detectar cuellos de botella y planificar mejor el mes.")
+    st.title("📜 Protocolo de Uso - Grupo Pressacco")
+    st.info("Elegimos sumar")
+    st.markdown("""
+    ### 1. Finalidad y Objetivo
+    Transformar nuestra carga de trabajo en **datos accionables**. El objetivo es medir capacidad, eficiencia y asegurar que el equipo trabaje de manera equilibrada.
+    
+    ### 2. Registro Diario y Control
+    *   **Identidad:** Cargá siempre en tu usuario.
+    *   **Total Día:** Registrar obligatoriamente **6 horas diarias** antes de las 15:00 hs.
+    *   **Sinceridad:** Si no hay tareas, usá **DISPONIBLE**. Las inasistencias deben registrarse para descontar capacidad neta.
+    
+    ### 3. Semáforo de Capacidad
+    *   🟢 **Verde (>20%):** Espacio libre para nuevos proyectos.
+    *   🟡 **Amarillo (10-20%):** Capacidad próxima al límite.
+    *   🔴 **Rojo (<10%):** Saturación operativa.
+    """)
     if st.button("📥 Descargar Guía Maestra (PDF)"):
         pdf = generar_pdf_base("PROTOCOLO DE USO - CRM", "Guía Completa de Funcionamiento", [], es_protocolo=True)
         st.download_button("Guardar Protocolo Maestro", pdf, "Protocolo_Pressacco.pdf")
 
-# ===== 10. CARGA MASIVA (Sujeto a Restauración) =====
+# ===== 10. CARGA MASIVA =====
 elif "Carga Masiva" in menu:
     st.title("📁 Reparto de Horas (Admin)")
     with st.form("f_m"):
