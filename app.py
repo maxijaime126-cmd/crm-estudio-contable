@@ -28,36 +28,55 @@ COLORES_TAREAS = {
 OPERARIOS_FIJOS = ["Natalia", "Maximiliano", "Athina", "Johana"]
 HORAS_DIA_LABORAL = 6
 
-TAREAS_DISPONIBLE_TIPO = [
-    "DISPONIBLE",
-    "PLANIFICACIONES/ORGANIZACIÓN/PROCEDIMIENTO S/INFORMES",
-    "INASISTENCIA POR EXAMEN O TRAMITE"
-]
+TAREAS_DISPONIBLE_TIPO = ["DISPONIBLE", "PLANIFICACIONES/ORGANIZACIÓN/PROCEDIMIENTO S/INFORMES", "INASISTENCIA POR EXAMEN O TRAMITE"]
 
-MESES_ES = {
-    1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
-    7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"
-}
+MESES_ES = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+            7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
 
-DIAS_SEMANA_ES = {
-    0: "Lunes", 1: "Martes", 2: "Miércoles", 3: "Jueves",
-    4: "Viernes", 5: "Sábado", 6: "Domingo"
-}
+DIAS_SEMANA_ES = {0: "Lunes", 1: "Martes", 2: "Miércoles", 3: "Jueves", 4: "Viernes", 5: "Sábado", 6: "Domingo"}
 
-# ===== 2. FERIADOS (CSV) =====
-@st.cache_data
-def cargar_feriados():
-    try:
-        df_f = pd.read_csv("feriados_2026.csv")
-        df_f.columns = df_f.columns.str.strip().str.lower()
-        df_f['fecha'] = pd.to_datetime(df_f['fecha'], errors='coerce')
-        return df_f['fecha'].dt.date.dropna().tolist()
-    except: return []
+# ===== 2. FUNCIONES PDF (REPORTE Y PROTOCOLO ACTUALIZADO) =====
+def generar_pdf_protocolo():
+    from reportlab.lib.pagesizes import letter
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, ListFlowable, ListItem
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.enums import TA_CENTER
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=letter)
+    s = getSampleStyleSheet()
+    
+    # Estilo personalizado para el Lema
+    style_lema = getSampleStyleSheet()['Normal']
+    style_lema.alignment = TA_CENTER
+    style_lema.fontName = 'Helvetica-Oblique'
 
-FERIADOS = cargar_feriados()
+    story = [
+        Paragraph("GRUPO PRESSACCO", s['Title']),
+        Paragraph("<i>Elegimos sumar</i>", style_lema),
+        Spacer(1, 20),
+        Paragraph("Protocolo de Trabajo del Sistema", s['Heading1']),
+        Spacer(1, 12),
+        Paragraph("1. Responsabilidad Individual y Privacidad", s['Heading2']),
+        Paragraph("Cada integrante debe ingresar con su usuario correspondiente. Es obligatorio cargar las horas únicamente en el panel personal para no distorsionar los datos de los demás compañeros y mantener la integridad de los reportes por sector.", s['Normal']),
+        Spacer(1, 10),
+        Paragraph("2. Reglas de Carga Diaria", s['Heading2']),
+        ListFlowable([
+            ListItem(Paragraph("Cargar horas todos los días antes de las 15:00 hs.", s['Normal'])),
+            ListItem(Paragraph("La jornada debe completar siempre un total de 6 horas.", s['Normal'])),
+            ListItem(Paragraph("Cargar bloques mínimos de 30 minutos (0.5 hs) para mayor precisión.", s['Normal'])),
+            ListItem(Paragraph("Si no hay tareas operativas, registrar el tiempo restante como 'DISPONIBLE'.", s['Normal'])),
+        ], bulletType='bullet'),
+        Spacer(1, 10),
+        Paragraph("3. Significado del Semáforo de Bienestar", s['Heading2']),
+        Paragraph("🟢 VERDE: Más del 20% libre (Capacidad de sumar tareas).", s['Normal']),
+        Paragraph("🟡 AMARILLO: 10% a 20% libre (Carga óptima).", s['Normal']),
+        Paragraph("🔴 ROJO: Menos del 10% libre (Saturación / Necesidad de apoyo).", s['Normal']),
+    ]
+    doc.build(story)
+    buf.seek(0)
+    return buf
 
-# ===== 3. PDF =====
-def generar_pdf(nombre, mes, anio, total_hs, eficiencia, estado, df_tareas):
+def generar_pdf_reporte(nombre, mes, anio, total_hs, eficiencia, estado, df_tareas):
     from reportlab.lib.pagesizes import letter
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
     from reportlab.lib.styles import getSampleStyleSheet
@@ -74,7 +93,7 @@ def generar_pdf(nombre, mes, anio, total_hs, eficiencia, estado, df_tareas):
     buf.seek(0)
     return buf
 
-# ===== 4. GOOGLE SHEETS =====
+# ===== 3. CONEXIÓN Y DATOS =====
 @st.cache_resource
 def conectar():
     creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=["https://www.googleapis.com/auth/spreadsheets","https://www.googleapis.com/auth/drive"])
@@ -101,11 +120,18 @@ def guardar_df(nombre, df):
         return True
     except: return False
 
-# ===== 5. LÓGICA CAPACIDAD =====
-def calcular_dias(ini, fin):
-    return len(pd.bdate_range(start=ini, end=fin, freq='C', holidays=FERIADOS))
+@st.cache_data
+def cargar_feriados():
+    try:
+        df_f = pd.read_csv("feriados_2026.csv")
+        df_f.columns = df_f.columns.str.strip().str.lower()
+        df_f['fecha'] = pd.to_datetime(df_f['fecha'], errors='coerce')
+        return df_f['fecha'].dt.date.dropna().tolist()
+    except: return []
 
-# ===== 6. INICIO APP =====
+FERIADOS = cargar_feriados()
+
+# ===== 4. INICIO APP =====
 if 'cargas' not in st.session_state:
     df, _ = cargar_hoja("Cargas")
     st.session_state.cargas = df if not df.empty else pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota'])
@@ -121,16 +147,37 @@ if st.session_state.usuario_actual is None:
         st.rerun()
     st.stop()
 
-# ===== 7. MENÚ SIDEBAR =====
-opciones = ["Panel de Control", "Cargar Horas", "Carga Masiva", "Resetear Datos"] if st.session_state.usuario_actual == "Admin - Ver todo" else ["Panel de Control", "Cargar Mis Horas"]
+# ===== 5. MENÚ SIDEBAR (SOPORTE PARA ROLES) =====
+opciones = ["Panel de Control", "Cargar Horas", "Carga Masiva", "Protocolo de Trabajo", "Resetear Datos"] if st.session_state.usuario_actual == "Admin - Ver todo" else ["Panel de Control", "Cargar Mis Horas", "Protocolo de Trabajo"]
 menu = st.sidebar.radio("Menú", opciones)
 
 if st.sidebar.button("Salir"):
     st.session_state.clear()
     st.rerun()
 
-# ===== 8. PANEL DE CONTROL =====
-if menu == "Panel de Control":
+# ===== 6. SECCIONES =====
+
+if menu == "Protocolo de Trabajo":
+    st.title("📖 Protocolo: Grupo Pressacco")
+    st.subheader("Elegimos sumar")
+    st.info("Este protocolo garantiza que la información del estudio sea privada, organizada y útil para todos.")
+    
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("**1. Privacidad de los Datos**")
+        st.write("Cada integrante debe seleccionar **únicamente su nombre** al cargar. Esto evita errores en los paneles de los demás compañeros.")
+        st.markdown("**2. Horario de Carga**")
+        st.write("Carga tus horas diariamente antes de las 15:00 hs. No dejes días sin completar.")
+    with c2:
+        st.markdown("**3. ¿Qué es el Semáforo?**")
+        st.write("🟢 **OK:** Más del 20% libre.")
+        st.write("🟡 **Atención:** 10% a 20% libre.")
+        st.write("🔴 **Al límite:** Menos del 10% libre.")
+    
+    st.divider()
+    st.download_button("📥 Descargar Protocolo Oficial (PDF)", data=generar_pdf_protocolo(), file_name="Protocolo_Grupo_Pressacco.pdf")
+
+elif menu == "Panel de Control":
     st.title("Panel de Control - Ocupación")
     c1, c2 = st.columns(2)
     with c1: anio = st.selectbox("Año", [2025, 2026, 2027], index=1)
@@ -138,7 +185,7 @@ if menu == "Panel de Control":
 
     inicio_m = datetime(anio, mes, 1).date()
     fin_m = (datetime(anio, mes+1, 1) if mes < 12 else datetime(anio+1, 1, 1)).date() - timedelta(days=1)
-    dias_h = calcular_dias(inicio_m, fin_m)
+    dias_h = len(pd.bdate_range(start=inicio_m, end=fin_m, freq='C', holidays=FERIADOS))
     cap_base = dias_h * HORAS_DIA_LABORAL
     st.info(f"**{MESES_ES[mes]} {anio}**: {dias_h} días hábiles. Capacidad: {cap_base} hs.")
 
@@ -147,7 +194,6 @@ if menu == "Panel de Control":
         df_p['Fecha'] = pd.to_datetime(df_p['Fecha'], errors='coerce')
         df_m = df_p[(df_p['Fecha'].dt.month == mes) & (df_p['Fecha'].dt.year == anio)]
         
-        # --- SECCIÓN INDIVIDUAL ---
         p_sel = st.selectbox("Operario:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
         df_ind_melt = df_m.melt(id_vars=['Fecha', 'Tarea'], value_vars=[p_sel], var_name='Op', value_name='Hs')
         df_ind_melt = df_ind_melt[df_ind_melt['Hs'] > 0]
@@ -156,8 +202,7 @@ if menu == "Panel de Control":
         total_c = res_t['Hs'].sum().round(1)
         hs_p = df_ind_melt[~df_ind_melt['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)]['Hs'].sum()
         eficiencia = (hs_p / cap_base * 100) if cap_base > 0 else 0
-        hs_l = df_ind_melt[df_ind_melt['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)]['Hs'].sum()
-        porc_l = (hs_l / total_c * 100) if total_c > 0 else 0
+        porc_l = (df_ind_melt[df_ind_melt['Tarea'].isin(TAREAS_DISPONIBLE_TIPO)]['Hs'].sum() / total_c * 100) if total_c > 0 else 0
         
         if porc_l >= 20.0: est = "🟢 OK"
         elif porc_l >= 10.0: est = "🟡 Atención"
@@ -165,50 +210,22 @@ if menu == "Panel de Control":
 
         col_g, col_m = st.columns([2,1])
         with col_g:
-            fig = px.pie(res_t, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title=f"Ocupación {p_sel}")
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(px.pie(res_t, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title=f"Ocupación {p_sel}"), use_container_width=True)
         with col_m:
             st.metric("Total Cargado", f"{total_c} hs")
             st.metric("Eficiencia", f"{eficiencia:.1f}%")
             st.metric("Disponibilidad", f"{porc_l:.1f}%")
             st.subheader(f"Estado: {est}")
             if st.button("Generar Reporte PDF"):
-                pdf = generar_pdf(p_sel, mes, anio, total_c, eficiencia, est, res_t)
-                st.download_button("Descargar PDF", pdf, f"Reporte_{p_sel}.pdf")
+                pdf_r = generar_pdf_reporte(p_sel, mes, anio, total_c, eficiencia, est, res_t)
+                st.download_button("Descargar Reporte", pdf_r, f"Reporte_{p_sel}.pdf")
 
-        # --- HISTÓRICO 3 MESES ---
-        st.divider()
-        st.subheader("Histórico Últimos 3 Meses")
-        h_data = []
-        for i in range(3):
-            m_h = mes - i
-            a_h = anio
-            if m_h <= 0: m_h += 12; a_h -= 1
-            df_h = df_p[(df_p['Fecha'].dt.month == m_h) & (df_p['Fecha'].dt.year == a_h)]
-            total_h = df_h[p_sel].sum()
-            h_data.append({'Mes': f"{MESES_ES[m_h][:3]}", 'Hs': total_h})
-        st.plotly_chart(px.bar(pd.DataFrame(h_data[::-1]), x='Mes', y='Hs', title="Evolución Horas"), use_container_width=True)
-
-        # --- EQUIPO TOTAL (ADMIN) ---
-        if st.session_state.usuario_actual == "Admin - Ver todo":
-            st.divider()
-            st.subheader("Visión General del Equipo")
-            df_eq = df_m.melt(id_vars=['Fecha', 'Tarea'], value_vars=OPERARIOS_FIJOS, var_name='Op', value_name='Hs')
-            res_eq = df_eq.groupby('Tarea')['Hs'].sum().round(1).reset_index()
-            st.plotly_chart(px.pie(res_eq, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, title="Distribución Total Equipo"), use_container_width=True)
-            res_ops = []
-            for o in OPERARIOS_FIJOS:
-                res_ops.append({'Operario': o, 'Total Hs': df_m[o].sum().round(1)})
-            st.table(pd.DataFrame(res_ops))
-
-# ===== 9. CARGA MASIVA =====
 elif menu == "Carga Masiva":
     st.title("Carga Masiva de Horas")
     with st.form("f_masiva"):
         u_m = st.selectbox("Operario", OPERARIOS_FIJOS)
         t_m = st.selectbox("Tarea", list(COLORES_TAREAS.keys()))
-        f_i = st.date_input("Inicio")
-        f_f = st.date_input("Fin")
+        f_i = st.date_input("Inicio"); f_f = st.date_input("Fin")
         h_t = st.number_input("Horas Totales", min_value=0.0)
         if st.form_submit_button("Guardar"):
             dias = pd.bdate_range(start=f_i, end=f_f, freq='C', holidays=FERIADOS)
@@ -221,77 +238,39 @@ elif menu == "Carga Masiva":
                     filas.append(f)
                 st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame(filas)], ignore_index=True)
                 guardar_df("Cargas", st.session_state.cargas)
-                st.success("Carga masiva completada")
-                st.rerun()
+                st.success("Carga masiva completada"); time.sleep(1); st.rerun()
 
-# ===== 10. CARGAR HORAS Y REGISTROS (HISTORIAL) =====
 elif "Cargar" in menu:
     st.title("Cargar Horas")
     u_c = st.selectbox("Persona:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
-    
     with st.form("f_ind"):
         f_f = st.date_input("Fecha", value=datetime.now())
         f_t = st.selectbox("Tarea", list(COLORES_TAREAS.keys()))
-        f_h = st.number_input("Horas", step=0.5)
-        f_n = st.text_input("Nota")
+        f_h = st.number_input("Horas", step=0.5); f_n = st.text_input("Nota")
         if st.form_submit_button("Guardar"):
             nueva = {'Fecha': f_f, 'Tarea': f_t, 'Nota': f_n}
             for op in OPERARIOS_FIJOS: nueva[op] = f_h if op == u_c else 0
             st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame([nueva])], ignore_index=True)
             guardar_df("Cargas", st.session_state.cargas)
-            st.success("Guardado")
-            st.rerun()
+            st.success("Guardado"); time.sleep(1); st.rerun()
 
     st.divider()
-    
-    # --- CUADRO DE RESUMEN POR MES (CON ORDEN CRONOLÓGICO) ---
-    st.subheader(f"Resumen Mensual por Tarea para {u_c}")
+    st.subheader(f"Resumen y Detalle para {u_c}")
     df_res = st.session_state.cargas.copy()
     df_res['Fecha'] = pd.to_datetime(df_res['Fecha'], errors='coerce')
     df_res = df_res[df_res[u_c] > 0]
-    
     if not df_res.empty:
-        df_res['Mes_N'] = df_res['Fecha'].dt.month
-        df_res['Año'] = df_res['Fecha'].dt.year
-        df_res['Mes'] = df_res['Mes_N'].map(MESES_ES)
-        
-        # Agrupamos incluyendo el número del mes para poder ordenar correctamente
+        df_res['Mes_N'] = df_res['Fecha'].dt.month; df_res['Año'] = df_res['Fecha'].dt.year; df_res['Mes'] = df_res['Mes_N'].map(MESES_ES)
         cuadro = df_res.groupby(['Año', 'Mes_N', 'Mes', 'Tarea'])[u_c].sum().reset_index()
-        cuadro.columns = ['Año', 'Mes_N', 'Mes', 'Tarea', 'Hs Totales']
+        st.dataframe(cuadro.sort_values(by=['Año', 'Mes_N'], ascending=False)[['Año', 'Mes', 'Tarea', u_c]], use_container_width=True, hide_index=True)
         
-        # Ordenamos por Año y Número de Mes de forma descendente (Abril -> Marzo -> Febrero)
-        cuadro_ordenado = cuadro.sort_values(by=['Año', 'Mes_N'], ascending=False)
-        
-        # Quitamos la columna auxiliar Mes_N antes de mostrar la tabla
-        st.dataframe(cuadro_ordenado[['Año', 'Mes', 'Tarea', 'Hs Totales']], use_container_width=True, hide_index=True)
-
-    st.divider()
-    
-    # --- HISTORIAL DETALLADO ---
-    st.subheader(f"Historial de Cargas Detallado para {u_c}")
-    ver_solo_dia = st.checkbox("Ver solo el día seleccionado arriba")
-    df_hist = st.session_state.cargas.copy()
-    df_hist['Fecha'] = pd.to_datetime(df_hist['Fecha'], errors='coerce')
-    df_hist = df_hist[df_hist[u_c] > 0]
-    
-    if ver_solo_dia:
-        df_hist = df_hist[df_hist['Fecha'].dt.date == f_f]
-    
-    df_hist = df_hist.sort_values('Fecha', ascending=False)
-    
-    if df_hist.empty:
-        st.info("No hay registros cargados.")
-    else:
-        for i, row in df_hist.iterrows():
-            with st.container():
-                col_info, col_del = st.columns([5, 1])
-                fecha_str = row['Fecha'].strftime('%d/%m/%Y')
-                dia_sem = DIAS_SEMANA_ES[row['Fecha'].weekday()]
-                col_info.write(f"**{fecha_str} ({dia_sem})** - {row['Tarea']}: **{row[u_c]} hs** | *{row.get('Nota', '')}*")
-                if col_del.button("Eliminar", key=f"del_{i}"):
-                    st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True)
-                    guardar_df("Cargas", st.session_state.cargas)
-                    st.rerun()
+        st.write("**Historial Detallado:**")
+        for i, row in df_res.sort_values('Fecha', ascending=False).iterrows():
+            c_i, c_d = st.columns([5,1])
+            c_i.write(f"**{row['Fecha'].strftime('%d/%m/%Y')}** - {row['Tarea']}: {row[u_c]} hs")
+            if c_d.button("Eliminar", key=f"del_{i}"):
+                st.session_state.cargas = st.session_state.cargas.drop(i).reset_index(drop=True)
+                guardar_df("Cargas", st.session_state.cargas); st.rerun()
 
 elif menu == "Resetear Datos":
     if st.text_input("Escriba BORRAR") == "BORRAR":
