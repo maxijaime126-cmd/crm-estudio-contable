@@ -27,7 +27,7 @@ MESES_ES = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Jun
 
 # ===== 2. FUNCIONES PDF MEJORADAS =====
 
-def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None, es_protocolo=False):
+def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None, es_protocolo=False, parrafos_extra=None):
     from reportlab.lib.pagesizes import letter
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
     from reportlab.lib.styles import getSampleStyleSheet
@@ -57,6 +57,12 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None, 
         Spacer(1, 15)
     ]
 
+    # Agregar párrafos de texto (especial para Protocolo)
+    if parrafos_extra:
+        for p in parrafos_extra:
+            story.append(Paragraph(p, s['Normal']))
+            story.append(Spacer(1, 10))
+
     if incluir_grafico:
         d = Drawing(450, 200)
         pc = Pie()
@@ -82,10 +88,10 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None, 
         
         data_p = []
         for fila in data:
-            estilo = estilo_negrita if str(fila[0]).upper() in ["TOTAL", "CONCEPTO", "REGLA"] else estilo_celda
+            estilo = estilo_negrita if str(fila[0]).upper() in ["TOTAL", "CONCEPTO", "REGLA", "PASO"] else estilo_celda
             data_p.append([Paragraph(str(c), estilo) for c in fila])
         
-        col_w = [2.5*inch] + [2.0*inch]*(len(data[0])-1) if es_protocolo else [2.5*inch] + [0.8*inch]*(len(data[0])-1)
+        col_w = [2.5*inch] + [2.2*inch]*(len(data[0])-1) if es_protocolo else [2.5*inch] + [0.8*inch]*(len(data[0])-1)
         
         t = Table(data_p, colWidths=col_w)
         estilo_t = [
@@ -326,11 +332,16 @@ elif "Protocolo" in menu:
         """)
         
     if st.button("📥 Descargar Protocolo Maestro (PDF)"):
+        # Contenido textual para el PDF
+        texto_extra = [
+            "¿Para qué sirve este CRM? Para medir nuestra capacidad real y eficiencia. Sin registros, no sabemos cuánto tiempo nos lleva cada cliente o proceso. Con estos datos, detectamos saturaciones y planificamos mejor el trabajo del equipo.[cite: 6]",
+            "REGLAS DE ORO: 1. Identidad propia. 2. Carga antes de 15hs. 3. 6 horas diarias. 4. Registrar tiempo real.[cite: 6]"
+        ]
         datos_proto = [
             ("FLUJO DIARIO", [["PASO", "ACCIÓN"], ["1. Alerta", "Verificar cartel de horas faltantes"], ["2. Carga", "Registrar tareas terminadas"], ["3. Cierre", "Verificar las 6hs del día"]]),
             ("REGLAS DE ORO", [["CONCEPTO", "DETALLE"], ["Carga Diaria", "Antes de las 15:00 hs"], ["Sinceridad", "Registrar tiempo real"], ["Admin", "No tocar Google Sheets manual"]])
         ]
-        pdf_p = generar_pdf_base("Protocolo de Uso - CRM", "Elegimos sumar", datos_proto, es_protocolo=True)
+        pdf_p = generar_pdf_base("Protocolo de Uso - CRM", "Elegimos sumar", datos_proto, es_protocolo=True, parrafos_extra=texto_extra)
         st.download_button("Guardar Protocolo", pdf_p, "Protocolo_Pressacco.pdf")
 
 # (Secciones Masiva y Reset se mantienen iguales)
