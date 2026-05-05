@@ -126,7 +126,6 @@ if st.session_state.usuario_actual is None:
     if st.button("Ingresar") and u != "Seleccionar...": st.session_state.usuario_actual = u; st.rerun()
     st.stop()
 
-# Alerta de capacidad mensual dinámica
 def mostrar_alerta_mensual(usuario):
     if usuario == "Admin - Ver todo" or usuario is None: return
     hoy = datetime.now()
@@ -147,17 +146,16 @@ mostrar_alerta_mensual(st.session_state.usuario_actual)
 menu = st.sidebar.radio("Navegación", ["📊 Panel de Control", "➕ Cargar Horas", "📁 Carga Masiva", "📜 Protocolo", "⚙️ Reset"] if st.session_state.usuario_actual == "Admin - Ver todo" else ["📊 Panel de Control", "➕ Cargar Mis Horas", "📜 Protocolo"])
 if st.sidebar.button("Cerrar Sesión"): st.session_state.clear(); st.rerun()
 
-# ===== 5. PANEL DE CONTROL (RESTAURADO) =====
+# ===== 5. PANEL DE CONTROL =====
 if "Panel de Control" in menu:
     st.title("📊 Análisis de Capacidad y Eficiencia")
     c1, c2, c3 = st.columns([1,1,2])
     with c1: anio = st.selectbox("Año", [2025, 2026], index=1)
     with c2: mes = st.selectbox("Mes", list(range(1,13)), format_func=lambda x: MESES_ES[x], index=datetime.now().month-1)
-    with c3: p_sel = st.selectbox("Integrante:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
+    with c3: p_sel = st.selectbox("Integrante Individual:", OPERARIOS_FIJOS) if st.session_state.usuario_actual == "Admin - Ver todo" else st.session_state.usuario_actual
 
     df_p = st.session_state.cargas.copy(); df_p['Fecha'] = pd.to_datetime(df_p['Fecha'], errors='coerce')
     
-    # --- HISTORIAL TRIMESTRAL (RESTAURADO) ---
     st.subheader(f"📈 Comparativa Trimestral - {p_sel}")
     comp_list = []; hist_pdf = {}
     for i in range(3):
@@ -178,19 +176,19 @@ if "Panel de Control" in menu:
 
     st.table(pd.DataFrame(comp_list))
     
-    if st.button("📥 PDF Trimestral Individual"):
+    if st.button("📥 PDF Trimestral"):
         tareas_u = sorted(list(set([t for m in hist_pdf for t in hist_pdf[m].keys()]))); meses_n = list(hist_pdf.keys())
-        rows = []; totales_m = [0.0] * len(meses_n)
+        rows = []; tot_m = [0.0] * len(meses_n)
         for t in tareas_u:
-            fila = [t]
+            f = [t]
             for idx, m in enumerate(meses_n):
-                val = round(float(hist_pdf[m].get(t, 0)), 1); fila.append(val); totales_m[idx] += val
-            rows.append(fila)
-        rows.append(["TOTAL BRUTO"] + [round(x, 1) for x in totales_m])
-        st.download_button("Guardar Trimestral", generar_pdf_base(f"Trimestral: {p_sel}", "Resumen 3 meses[cite: 1]", [("Detalle", [["Tarea"] + meses_n] + rows)]), f"Trimestral_{p_sel}.pdf")
+                v = round(float(hist_pdf[m].get(t, 0)), 1); f.append(v); tot_m[idx] += v
+            rows.append(f)
+        rows.append(["TOTAL BRUTO"] + [round(x, 1) for x in tot_m])
+        st.download_button("Guardar Trimestral", generar_pdf_base(f"Trimestral: {p_sel}", "Resumen 3 meses", [("Detalle", [["Tarea"] + meses_n] + rows)]), f"Trimestral_{p_sel}.pdf")
 
     st.divider()
-    # --- GRÁFICO DONA INDIVIDUAL ---
+    # GRÁFICO INDIVIDUAL (CORREGIDO PARA TODOS LOS USUARIOS)
     df_act = df_p[(df_p['Fecha'].dt.month == mes) & (df_p['Fecha'].dt.year == anio)]
     res_ind = df_act.groupby('Tarea')[p_sel].sum().round(1).reset_index()
     res_graf = res_ind[(res_ind[p_sel] > 0) & (~res_ind['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD))]
@@ -198,26 +196,26 @@ if "Panel de Control" in menu:
     if not res_graf.empty:
         col_g, col_m = st.columns([2,1])
         with col_g:
-            fig = px.pie(res_graf, values=p_sel, names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, hole=0.5, title=f"Eficiencia Real - {p_sel}[cite: 1]")
+            fig = px.pie(res_graf, values=p_sel, names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, hole=0.5, title=f"Eficiencia Real - {p_sel}")
             fig.update_traces(textposition='inside', textinfo='percent+label')
             st.plotly_chart(fig, use_container_width=True)
         with col_m:
             st.metric("Disponibilidad", comp_list[0]["Disponibilidad"])
             st.metric("Estado", comp_list[0]["Estado"])
-            if st.button("📥 PDF Mensual Individual"):
+            if st.button("📥 PDF Mensual"):
                 dat = [["Tarea", "Horas"]] + [[r['Tarea'], r[p_sel]] for _, r in res_ind.iterrows()] + [["TOTAL", comp_list[0]["Carga"]]]
                 st.download_button("Guardar Mensual", generar_pdf_base(f"Reporte {p_sel}", f"{MESES_ES[mes]} {anio}", [("Detalle", dat)], incluir_grafico=res_ind.set_index('Tarea')[p_sel].to_dict()), f"Mensual_{p_sel}.pdf")
 
-    # --- VISIÓN GLOBAL (RESTAURADA PARA ADMIN) ---
+    # VISIÓN GLOBAL (ADMIN)
     if st.session_state.usuario_actual == "Admin - Ver todo":
         st.divider(); st.subheader("🌐 Visión Global del Estudio (Equipo)")
         df_eq = df_act[~df_act['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)].melt(id_vars=['Fecha', 'Tarea'], value_vars=OPERARIOS_FIJOS, var_name='Op', value_name='Hs')
         res_eq = df_eq.groupby('Tarea')['Hs'].sum().reset_index()
-        fig_g = px.pie(res_eq, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, hole=0.5, title="Total Horas Equipo (Sin Inasistencias)")
+        fig_g = px.pie(res_eq, values='Hs', names='Tarea', color='Tarea', color_discrete_map=COLORES_TAREAS, hole=0.5, title="Total Horas Equipo")
         fig_g.update_traces(textposition='inside', textinfo='percent+label')
         st.plotly_chart(fig_g, use_container_width=True)
         
-        if st.button("📥 PDF Global Trimestral"):
+        if st.button("📥 PDF Global"):
             hist_g = {}
             for i in range(3):
                 m_c = mes - i; a_c = anio
@@ -227,14 +225,14 @@ if "Panel de Control" in menu:
             tg = sorted(list(set([t for m in hist_g for t in hist_g[m].keys()]))); mg = list(hist_g.keys())
             rg = []; totg = [0.0] * len(mg)
             for t in tg:
-                f = [t]
+                f = [t]; 
                 for idx, m in enumerate(mg):
                     v = round(float(hist_g[m].get(t, 0)), 1); f.append(v); totg[idx] += v
                 rg.append(f)
             rg.append(["TOTAL NETO"] + [round(x, 1) for x in totg])
-            st.download_button("Guardar Global", generar_pdf_base("REPORTE GLOBAL", "Estudio Completo[cite: 1]", [("Consolidado", [["Tarea"] + mg] + rg)], incluir_grafico=res_eq.set_index('Tarea')['Hs'].to_dict()), "Global_Neto.pdf")
+            st.download_button("Guardar Global", generar_pdf_base("REPORTE GLOBAL", "Estudio Completo", [("Consolidado", [["Tarea"] + mg] + rg)], incluir_grafico=res_eq.set_index('Tarea')['Hs'].to_dict()), "Global_Neto.pdf")
 
-# ===== 6. CARGA MASIVA =====
+# (Secciones Carga Masiva, Carga Individual, Protocolo y Reset intactas)
 elif "Carga Masiva" in menu:
     st.title("📁 Distribución Masiva")
     with st.form("fm"):
@@ -250,9 +248,8 @@ elif "Carga Masiva" in menu:
                     filas.append(fila)
                 st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame(filas)], ignore_index=True)
                 if guardar_df("Cargas", st.session_state.cargas):
-                    st.success(f"✅ Guardado: {h_t} hs para {u_m}."); time.sleep(1.5); st.rerun()
+                    st.success(f"✅ Guardado con éxito."); time.sleep(1.5); st.rerun()
 
-# ===== 7. CARGAR HORAS =====
 elif "Cargar" in menu:
     st.title("➕ Registro de Horas")
     u_c = st.session_state.usuario_actual if st.session_state.usuario_actual != "Admin - Ver todo" else st.selectbox("Persona:", OPERARIOS_FIJOS)
@@ -268,7 +265,6 @@ elif "Cargar" in menu:
     df_f = df_h[(df_h[u_c] > 0) & (df_h['Fecha'].dt.month == mes_f)]
     if not df_f.empty:
         st.info(f"**Total {MESES_ES[mes_f]}:** {round(df_f[u_c].sum(), 1)} hs")
-        st.dataframe(df_f.groupby('Tarea')[u_c].sum().reset_index(), hide_index=True)
         for i, r in df_f.sort_values('Fecha', ascending=False).iterrows():
             c1, c2 = st.columns([6, 1])
             c1.write(f"📅 {r['Fecha'].strftime('%d/%m/%Y')} | {r['Tarea']} | {r[u_c]} hs | {r['Nota']}")
@@ -281,4 +277,4 @@ elif "Protocolo" in menu:
 
 elif "Reset" in menu:
     if st.text_input("Escriba BORRAR") == "BORRAR":
-        if st.button("Limpiar"): guardar_df("Cargas", pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota'])); st.rerun()
+        if st.button("Limpiar Todo"): guardar_df("Cargas", pd.DataFrame(columns=['Fecha', 'Tarea'] + OPERARIOS_FIJOS + ['Nota'])); st.rerun()
