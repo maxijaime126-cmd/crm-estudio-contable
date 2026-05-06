@@ -360,10 +360,11 @@ if "Panel de Control" in menu:
                     if val > 0: return 'color: #2d6a4f; font-weight:600'
                     elif val < 0: return 'color: #e63946; font-weight:600'
                 return ''
-            st.dataframe(
-                dev.style.applymap(colorear, subset=['Desvío (hs)', 'Desvío (%)']),
-                use_container_width=True, hide_index=True
-            )
+            try:
+                styled = dev.style.map(colorear, subset=['Desvío (hs)', 'Desvío (%)'])
+            except AttributeError:
+                styled = dev.style.applymap(colorear, subset=['Desvío (hs)', 'Desvío (%)'])
+            st.dataframe(styled, use_container_width=True, hide_index=True)
         with col_g:
             fig_dev = px.bar(dev, x='Desvío (hs)', y='Tarea', orientation='h',
                              color='Desvío (hs)', color_continuous_scale=['#e63946', '#adb5bd', '#2d6a4f'],
