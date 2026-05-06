@@ -305,8 +305,8 @@ if st.session_state.usuario_actual != "Admin - Ver todo":
  
 # ===== 14. NAVEGACIÓN =====
 es_admin = st.session_state.usuario_actual == "Admin - Ver todo"
-menu_opciones = ["📊 Panel de Control", "➕ Cargar Horas", "📁 Carga Masiva", "📜 Protocolo", "⚙️ Reset"] if es_admin \
-    else ["📊 Panel de Control", "➕ Cargar Mis Horas", "📜 Protocolo"]
+menu_opciones = ["📊 Panel de Control", "➕ Cargar Horas", "📁 Carga Masiva", "📚 Manual", "📜 Protocolo", "⚙️ Reset"] if es_admin \
+    else ["📊 Panel de Control", "➕ Cargar Mis Horas", "📚 Manual", "📜 Protocolo"]
 menu = st.sidebar.radio("Navegación", menu_opciones)
 if st.sidebar.button("Cerrar Sesión"):
     st.session_state.clear(); st.rerun()
@@ -572,7 +572,258 @@ elif "Cargar" in menu:
                 st.session_state.cargas.drop(i, inplace=True)
                 guardar_df("Cargas", st.session_state.cargas); st.rerun()
  
-# ===== 18. PROTOCOLO =====
+# ===== 18. MANUAL INTEGRADO =====
+elif "Manual" in menu:
+    st.title("📚 Manual de Uso — CRM Capacidad Instalada")
+    st.markdown("**Versión 2.0** | Todo lo que necesitás saber para usar el sistema correctamente.")
+    st.divider()
+ 
+    with st.expander("🎯 1. ¿Qué es el CRM?", expanded=False):
+        st.markdown("""
+El CRM es una aplicación interna que permite registrar y analizar cómo se distribuye el tiempo de trabajo del equipo. 
+Su único objetivo es entender cuántas horas dedica cada integrante a cada tipo de tarea y detectar desequilibrios.
+ 
+**Para qué sirve:**
+- Ver en tiempo real si alguien está saturado (🔴) o tiene capacidad (🟢)
+- Comparar el mes actual con meses anteriores para detectar tendencias
+- Identificar si alguna tarea consume más horas de lo habitual (desvío)
+- Generar reportes en PDF para reuniones de equipo
+- Tener registro histórico del trabajo realizado
+ 
+**Regla fundamental:** Cada integrante debe cargar sus horas antes de las 15:00 hs cada día.
+        """)
+ 
+    with st.expander("📖 2. Conceptos Clave — Glosario", expanded=False):
+        st.markdown("""
+| Término | Significa | Ejemplo |
+|---------|-----------|---------|
+| **Capacidad Bruta** | Total de horas posibles en el mes | 20 días × 6 hs = 120 hs |
+| **Capacidad Neta** | Bruta - horas de inasistencias | 120 - 6 (examen) = 114 hs |
+| **Horas Cargadas** | Total registrado en el sistema | 108 hs en el mes |
+| **Utilización Real %** | Horas productivas ÷ Cap. Neta | 90 ÷ 114 = 78.9% |
+| **Disponibilidad %** | Horas libres ÷ Cap. Neta | 20 ÷ 114 = 17.5% |
+| **Desvío (hs)** | Actual vs promedio histórico | +17 hs en Impuestos |
+| **Desvío (%)** | El desvío en porcentaje | +17 ÷ 4 promedio = +425% |
+| **Días sin carga** | Días laborales sin registros | 4 días pendientes |
+        """)
+ 
+    with st.expander("🏷️ 3. Tipos de Tareas — Qué Cargar", expanded=False):
+        st.markdown("""
+Al cargar, elegir la categoría correcta. Solo 2 tareas cuentan como "disponibilidad":
+ 
+| Tarea | Cuándo usarla | ¿Afecta disponibilidad? |
+|-------|--------------|------------------------|
+| DOCUMENTACIÓN CARGA | Carga de documentos de clientes | No |
+| DOCUMENTACIÓN CONTROL | Revisión y control de docs | No |
+| IMPUESTOS | Presentaciones impositivas | No |
+| SUELDOS | Liquidación de haberes | No |
+| CONTABILIDAD | Registraciones contables | No |
+| ATENCION AL CLIENTE | Consultas, mails, llamadas | No |
+| TAREAS NO RUTINARIAS | Tareas puntuales | No |
+| **DISPONIBLE** | Horas sin asignación productiva | **SÍ** |
+| REUNIONES DE EQUIPO | Reuniones internas | No |
+| INASISTENCIA POR EXAMEN O TRÁMITE | Ausencia planificada | **Descuenta Cap. Neta** |
+| **PLANIFICACIONES / ORGANIZACIÓN / INFORMES** | Organización interna | **SÍ** |
+ 
+⚠️ Solo DISPONIBLE y PLANIFICACIONES cuentan como disponibilidad.  
+🔴 INASISTENCIA es la única que reduce la capacidad neta.
+        """)
+ 
+    with st.expander("🚦 4. El Semáforo de Estado", expanded=False):
+        st.markdown("""
+El sistema clasifica automáticamente a cada integrante por su % de disponibilidad:
+ 
+| Estado | Disponibilidad | Significa | Acción |
+|--------|---|----------|--------|
+| 🟢 **Libre** | > 20% | Más de 1/5 del tiempo sin asignar | Puede absorber nuevas tareas |
+| 🟡 **Atención** | 10% - 20% | Carga equilibrada pero ajustada | Monitorear antes de agregar |
+| 🔴 **Saturado** | < 10% | Casi sin horas libres | Redistribuir tareas urgentemente |
+ 
+El objetivo es que el equipo esté entre 🟡 (Atención) y 🟢 (Libre).
+        """)
+ 
+    with st.expander("📊 5. El Panel de Control — Qué Mirar en Cada Parte", expanded=False):
+        st.markdown("""
+**Las 4 Tarjetas (KPIs) — arriba del todo:**
+- **Horas Cargadas:** Total del mes. Si es muy bajo, faltan días sin cargar
+- **Capacidad Neta:** Horas disponibles reales (puede bajar por inasistencias)
+- **Utilización Real %:** Porcentaje de tiempo en trabajo productivo
+- **Disponibilidad %:** Porcentaje de tiempo libre o en planificaciones
+ 
+**Alertas Automáticas:** Aparecen si detecta:
+- 📅 Días laborales sin carga (mostradas los 3 más recientes)
+- ⚠️ Alguna tarea con desvío mayor al 50%
+- 🔴 Saturación crítica (disponibilidad < 10%)
+ 
+**Tabla de Desvío vs. Promedio Histórico:** (Lo más importante)
+- Compara tarea por tarea el mes actual vs promedio de 2 meses anteriores
+- Columnas: Actual (hs), Promedio Hist, Desvío (hs), Desvío (%)
+- Verde = subió, Rojo = bajó
+- Siempre mirar las HORAS ABSOLUTAS primero, el % después
+ 
+**Tendencia Histórica (6 meses):** Gráfico de barras apiladas
+- Ver si una tarea crece sostenidamente (necesita más recursos)
+- Detectar picos puntuales (campaña impositiva, cierre)
+ 
+**Distribución Semanal:** Horas por semana del mes
+- Si está muy concentrada en la última semana, hay carga retroactiva
+- Si hay semanas con 0 hs, faltan días sin cargar
+ 
+**Dona de Composición:** Gráfico circular
+- Muestra qué % fue a cada tarea en el mes
+- Útil para comunicar en reuniones
+ 
+**Comparativa Trimestral:** Últimos 3 meses lado a lado
+- Ver si disponibilidad mejoró o empeoró
+- Detectar tendencia de saturación (3 🔴 seguidos = problema estructural)
+ 
+**Balance del Equipo (solo Admin):**
+- Tabla con TODOS los integrantes, horas y estado de semáforo
+- Heatmap: cruza tareas × integrantes, ve distribución real
+        """)
+ 
+    with st.expander("✍️ 6. Cómo Cargar Horas Correctamente", expanded=False):
+        st.markdown("""
+**Desde el menú: "➕ Cargar Mis Horas"**
+ 
+Completar:
+- **Fecha:** El día (puede ser retroactivo)
+- **Tarea:** Elegir la correcta (ver sección 3)
+- **Horas:** En pasos de 0.5. Habitual: 6 hs (día completo)
+- **Nota:** Opcional. Útil para aclarar detalles
+ 
+**Reglas de carga:**
+ 
+| Situación | Qué cargar |
+|-----------|-----------|
+| Día normal (6 hs) | Una o más filas que sumen 6 hs |
+| Varias tareas en un día | Una fila por cada tarea |
+| Ausencia por examen/trámite | INASISTENCIA POR EXAMEN O TRÁMITE |
+| Día sin trabajo | DISPONIBLE por las horas libres |
+| Reunión interna | REUNIONES DE EQUIPO |
+| Feriado | No cargar nada (ya está excluido) |
+ 
+⚠️ El sistema avisa si ya existe carga para el mismo día + tarea.  
+💡 Si hay error, eliminar desde el historial mensual y volver a cargar.
+ 
+**Carga Masiva (solo Admin):**
+- Cargar una tarea para una persona en un rango de fechas
+- El sistema divide las horas totales entre días hábiles automáticamente
+        """)
+ 
+    with st.expander("🔴 7. Cómo Interpretar los Desvíos", expanded=False):
+        st.markdown("""
+**Los desvíos son la métrica más valiosa pero también la más fácil de malinterpretar.**
+ 
+**Desvíos NORMALES y esperables:**
+- **IMPUESTOS alto en marzo-abril y agosto-sept:** Vencimientos Ganancias, Bienes Personales. Estacionalidad pura
+- **SUELDOS al principio del mes:** Liquidación concentrada. Normal
+- **PLANIFICACIONES en enero:** Reorganización de año nuevo. Esperado
+- **DISPONIBLE alto en vacaciones:** Si hay menos clientes activos. Normal
+ 
+**Desvíos que REQUIEREN ANÁLISIS:**
+- **ATENCION AL CLIENTE crece 3 meses seguidos:** Puede indicar problema de comunicación o demanda real creciente
+- **TAREAS NO RUTINARIAS siempre alto:** Si aparece todos los meses, ya no es no rutinario. Revisar si necesita categoría propia
+- **DISPONIBLE alto + CUALQUIER TAREA bajo:** Revisar si no se está subcargando
+ 
+**⚠️ EL PORCENTAJE PUEDE ENGAÑAR:**
+- Desvío de +1700% suena alarmante
+- Pero si el promedio era 1 hora y este mes fueron 18 hs, el problema es que meses anteriores estaban subcargados
+- **SIEMPRE leer las HORAS ABSOLUTAS primero, el porcentaje después**
+        """)
+ 
+    with st.expander("🚨 8. Errores Comunes y Cómo Evitarlos", expanded=False):
+        st.markdown("""
+| Error | Consecuencia | Solución |
+|-------|-------------|----------|
+| No cargar un día hábil | Alerta de "días sin carga", historial distorsionado | Cargar antes de las 15 hs cada día |
+| Cargar todo al final del mes | Distribución semanal concentrada en última semana | Carga diaria o cada 2 días |
+| Usar DISPONIBLE para reuniones | Infla disponibilidad artificialmente | Usar REUNIONES DE EQUIPO |
+| Olvidar INASISTENCIA | Capacidad neta sobreestimada | Cargar inasistencia el mismo día o al volver |
+| Todo en una sola tarea | Análisis de composición pierden sentido | Si varias tareas, una fila por cada una |
+| Carga duplicada | El sistema avisa pero se puede ignorar | Revisar historial antes de cargar retroactivo |
+        """)
+ 
+    with st.expander("📋 9. Reunión Mensual — Paso a Paso", expanded=False):
+        st.markdown("""
+**Se recomienda: Primer viernes de cada mes**
+ 
+| Paso | Acción | Tiempo |
+|------|--------|--------|
+| 1 | Abrir CRM como Admin - Ver todo | 1 min |
+| 2 | Seleccionar mes y año a revisar | 1 min |
+| 3 | Ver Balance del Equipo: ¿alguien en 🔴? | 5 min |
+| 4 | Revisar Alertas Automáticas de cada integrante | 5 min |
+| 5 | Analizar tabla de Desvíos: ¿qué cambió? | 10 min |
+| 6 | Ver Tendencia 6 meses: ¿tendencia preocupante? | 5 min |
+| 7 | Comparar disponibilidad en tabla Trimestral | 5 min |
+| 8 | Descargar PDF Global para registro | 2 min |
+| 9 | Definir acciones si hay desvíos o saturación | 10 min |
+ 
+**PREGUNTAS CLAVE A RESPONDER:**
+- ¿Algún integrante estuvo 🔴 Saturado? ¿Por qué tarea?
+- ¿Hay tarea con desvío mayor al 30%? ¿Fue esperado?
+- ¿La carga está bien distribuida o concentrada?
+- ¿Hay días pendientes de cargar?
+- ¿Hay tendencia de 6 meses que requiera ajuste?
+ 
+**Si no hay tiempo:** Al menos mirar Balance del Equipo (paso 3) y tabla de Desvíos (paso 5).
+        """)
+ 
+    with st.expander("📥 10. PDFs y Reportes", expanded=False):
+        st.markdown("""
+El sistema genera 3 tipos de reportes:
+ 
+| Reporte | Contiene | Cuándo usarlo |
+|---------|----------|--|
+| **PDF Mensual Individual** | Horas por tarea del mes + gráfico dona | Para que cada integrante tenga su resumen |
+| **PDF Trimestral Individual** | Detalle por tarea de últimos 3 meses | Revisión trimestral o evaluación |
+| **PDF Global del Estudio** | Consolidado de todo el equipo por 3 meses | Reunión mensual de gestión |
+ 
+**Se recomienda:** Guardar el PDF Global del primer viernes de cada mes en una carpeta con el nombre:
+```
+CRM_Global_MesAño.pdf
+Ejemplo: CRM_Global_Mayo2026.pdf
+```
+Así queda historial accesible si el sistema cambia en el futuro.
+        """)
+ 
+    with st.expander("🔐 11. Roles y Accesos", expanded=False):
+        st.markdown("""
+| Usuario | Puede ver | Puede hacer |
+|---------|-----------|-------------|
+| **Natalia / Maximiliano / Athina / Johana** | Su propio panel e historial | Cargar sus horas, ver su historial, descargar su PDF |
+| **Admin - Ver todo** | Todo el equipo, balance, heatmap | Todo lo anterior + carga masiva, PDF global |
+ 
+🔐 El acceso es solo por nombre. No hay contraseña. Admin es quien gestiona el estudio.
+        """)
+ 
+    with st.expander("❓ 12. Preguntas Frecuentes", expanded=False):
+        st.markdown("""
+**¿Por qué aparece desvío enorme si es el primer mes?**
+El sistema necesita 2 meses de histórico para comparar. El 1er y 2do mes no tienen desvío (histórico muy bajo/cero). Se normaliza en el 3er mes.
+ 
+**¿Qué pasa si cargo mal una tarea?**
+Se puede eliminar desde el historial en "➕ Cargar Mis Horas". Encontrar la fila, hacer clic en "Eliminar" y cargar correctamente.
+ 
+**¿El sistema descuenta feriados automáticamente?**
+Sí. Tiene cargados los feriados nacionales de 2026 en un archivo. Los días hábiles se calculan sin sábados, domingos ni feriados.
+ 
+**¿Qué pasa si el mes está a mitad de curso?**
+La capacidad neta es del mes completo, pero las alertas de "días sin carga" solo miran hasta hoy. Los KPIs muestran cargado hasta ahora vs. capacidad total. Utilización baja si estamos en principio de mes. Es normal.
+ 
+**¿Se puede usar para planificar trabajo futuro?**
+El sistema está diseñado para registro histórico, no planificación. Se puede usar carga masiva para futuro pero puede distorsionar análisis. Se recomienda uso solo para pasado.
+ 
+**¿Cada cuánto conviene hacer análisis completo?**
+Mínimo: una vez por mes (1er viernes del mes siguiente).  
+Si hay mucho trabajo o saturación: revisión semanal rápida (solo KPIs y alertas).
+        """)
+ 
+    st.divider()
+    st.markdown("**¿Necesitás descargar el manual completo en Word?** Usa la opción '📜 Protocolo' en el menú lateral.")
+ 
+# ===== 19. PROTOCOLO =====
 elif "Protocolo" in menu:
     st.title("📜 Protocolo de Uso")
     if st.button("📥 Descargar Guía"):
