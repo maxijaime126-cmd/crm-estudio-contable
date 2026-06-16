@@ -541,12 +541,16 @@ if "Panel de Control" in menu:
 # ===== 17. CARGA MASIVA =====
 elif "Carga Masiva" in menu:
     st.title("📁 Distribución Masiva")
+
+    # Tarea y Subtarea fuera del form (mismo motivo que en Carga Individual:
+    # dentro de un st.form no se re-renderizan en vivo al cambiar la Tarea)
+    t_m = st.selectbox("Tarea", list(COLORES_TAREAS.keys()), key="tarea_masiva")
+    subs_m = SUBTAREAS.get(t_m, [])
+    st_m = st.selectbox("Subtarea", subs_m, key="subtarea_masiva") if subs_m else None
+
     with st.form("fm"):
         u_m = st.selectbox("Persona", OPERARIOS_FIJOS)
-        t_m = st.selectbox("Tarea", list(COLORES_TAREAS.keys()))
-        # Subtarea condicional
-        subs_m = SUBTAREAS.get(t_m, [])
-        st_m = st.selectbox("Subtarea", subs_m) if subs_m else None
+        st.write(f"**Tarea:** {t_m}" + (f" — {st_m}" if st_m else ""))
         f_i = st.date_input("Desde"); f_f = st.date_input("Hasta")
         h_t = st.number_input("Horas Totales", min_value=0.0)
         if st.form_submit_button("Ejecutar"):
@@ -566,18 +570,21 @@ elif "Cargar" in menu:
     st.title("➕ Registro de Horas")
     u_c = st.session_state.usuario_actual if not es_admin else st.selectbox("Persona:", OPERARIOS_FIJOS)
 
+    # ===== TAREA Y SUBTAREA FUERA DEL FORM =====
+    # (st.form "congela" los widgets internos hasta el submit; al elegir Tarea
+    # dentro del form, Streamlit no re-renderiza el selectbox de Subtarea en vivo.
+    # Por eso van afuera: cualquier cambio acá se refleja al instante.)
+    f_t = st.selectbox("Tarea", list(COLORES_TAREAS.keys()), key="tarea_sel")
+    subs_disponibles = SUBTAREAS.get(f_t, [])
+    if subs_disponibles:
+        f_sub = st.selectbox("Subtarea", subs_disponibles, key="subtarea_sel")
+    else:
+        f_sub = "—"
+        st.caption("Esta tarea no tiene subtareas.")
+
     with st.form("fi"):
         f_fecha = st.date_input("Fecha", value=datetime.now())
-        f_t = st.selectbox("Tarea", list(COLORES_TAREAS.keys()))
-
-        # ===== SUBTAREA CONDICIONAL =====
-        subs_disponibles = SUBTAREAS.get(f_t, [])
-        if subs_disponibles:
-            f_sub = st.selectbox("Subtarea", subs_disponibles)
-        else:
-            f_sub = "—"
-            st.caption("Esta tarea no tiene subtareas.")
-
+        st.write(f"**Tarea seleccionada:** {f_t}" + (f" — {f_sub}" if f_sub != "—" else ""))
         f_h = st.number_input("Horas", step=0.5, value=6.0)
         f_n = st.text_input("Nota")
 
