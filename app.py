@@ -20,13 +20,11 @@ COLORES_TAREAS = {
     "PLANIFICACIONES/ORGANIZACIÓN/PROCEDIMIENTOS/INFORMES": "#40E0D0"
 }
 
-# ===== NUEVO: SUBTAREAS POR TAREA =====
 SUBTAREAS = {
     "IMPUESTOS": ["Anual", "Mensual"],
     "SUELDOS": ["Liquidación", "Cargas Sociales y Sindicato", "SAC"],
     "CONTABILIDAD": ["Rutinaria", "Cierre y Balances"],
     "DOCUMENTACIÓN CARGA": ["Monotributo", "Responsable Inscripto", "Sociedades"],
-    # Las siguientes NO tienen subtareas
     "DOCUMENTACIÓN CONTROL": [],
     "ATENCION AL CLIENTE": [],
     "TAREAS NO RUTINARIAS": [],
@@ -60,6 +58,13 @@ st.markdown("""
     }
     .desvio-pos { color: #2d6a4f; font-weight: 600; }
     .desvio-neg { color: #e63946; font-weight: 600; }
+    .dia-card {
+        border-radius: 10px; padding: 12px 16px; margin-bottom: 8px;
+        border-left: 6px solid #ccc; background: #fafafa;
+    }
+    .dia-verde { border-left-color: #2d6a4f; background: #f0fff4; }
+    .dia-amarillo { border-left-color: #e9c46a; background: #fffbea; }
+    .dia-rojo { border-left-color: #e63946; background: #fff0f0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -79,9 +84,14 @@ def semaforo_estado(disp_pct):
     elif disp_pct >= 10: return "🟡 Atención"
     else: return "🔴 Saturado"
 
+def semaforo_dia(margen_hs):
+    """Semáforo para el margen de un día puntual (hs libres respecto de las 6hs)."""
+    if margen_hs <= 0: return "🔴 Saturado", "dia-rojo"
+    elif margen_hs < 2: return "🟡 Ajustado", "dia-amarillo"
+    else: return "🟢 Con margen", "dia-verde"
+
 # ===== 4. ETIQUETA TAREA+SUBTAREA =====
 def etiqueta_tarea(tarea, subtarea):
-    """Devuelve 'TAREA — Subtarea' si hay subtarea, si no solo 'TAREA'."""
     if subtarea and str(subtarea).strip() and str(subtarea).strip() != "—":
         return f"{tarea} — {subtarea}"
     return tarea
@@ -186,7 +196,71 @@ def generar_alertas(df, operario, anio, mes, feriados):
 
     return alertas
 
-# ===== 10. PDF =====
+# ===== 10. MATRIZ DE COMPETENCIAS (NUEVO) =====
+def tiene_competencia(df_comp, integrante, tarea, subtarea):
+    """
+    Por defecto se asume que TODOS saben hacer TODAS las tareas, salvo que exista
+    una fila explícita en la hoja 'Competencias' marcando 'No'. Así el admin solo
+    tiene que cargar las EXCEPCIONES (ej: Maximiliano - Sueldos - Liquidación - No).
+    """
+    if df_comp is None or df_comp.empty:
+        return True
+    sub_norm = subtarea if subtarea and str(subtarea).strip() not in ('', '—') else '—'
+    match = df_comp[
+        (df_comp['Integrante'] == integrante) &
+        (df_comp['Tarea'] == tarea) &
+        (df_comp['Subtarea'].astype(str) == str(sub_norm))
+    ]
+    if match.empty:
+        return True
+    valor = str(match.iloc[0].get('Sabe', 'Sí')).strip().lower()
+    return valor not in ('no', 'false', '0')
+
+# ===== 11. VISTA DIARIA DEL EQUIPO (NUEVO) =====
+def foto_dia(df, fecha):
+    """Estado de los 4 integrantes para UN día puntual."""
+    df_dia = df[df['Fecha'].dt.date == fecha]
+    rows = []
+    for op in OPERARIOS_FIJOS:
+        df_op = df_dia[df_dia[op] > 0]
+        total = round(df_op[op].sum(), 1)
+        margen = round(HORAS_DIA_LABORAL - total, 1)
+        tareas_dia = df_op.apply(lambda r: etiqueta_tarea(r['Tarea'], r.get('Subtarea', '')), axis=1).tolist()
+        estado, css_class = semaforo_dia(margen)
+        rows.append({
+            'Integrante': op,
+            'Horas Cargadas': total,
+            'Margen (hs)': max(margen, 0),
+            'Tareas del día': ", ".join(tareas_dia) if tareas_dia else "Sin carga registrada",
+            'Estado': estado,
+            '_css': css_class
+        })
+    return pd.DataFrame(rows)
+
+def sugerir_ayuda(df, fecha, tarea_objetivo, subtarea_objetivo, df_comp, excluir=None):
+    """Quién tiene margen ESE día Y sabe hacer esa tarea/subtarea puntual."""
+    df_dia = df[df['Fecha'].dt.date == fecha]
+    candidatos = []
+    for op in OPERARIOS_FIJOS:
+        if op == excluir:
+            continue
+        total = df_dia[op].sum() if not df_dia.empty else 0
+        margen = round(HORAS_DIA_LABORAL - total, 1)
+        sabe = tiene_competencia(df_comp, op, tarea_objetivo, subtarea_objetivo)
+        if margen > 0 and sabe:
+            candidatos.append({'Integrante': op, 'Margen ese día (hs)': margen})
+    if not candidatos:
+        return pd.DataFrame()
+    return pd.DataFrame(candidatos).sort_values('Margen ese día (hs)', ascending=False).reset_index(drop=True)
+
+def horas_cargadas_dia(df, integrante, fecha, excluir_index=None):
+    """Suma TODAS las horas ya cargadas por una persona en un día (para validar saturación real)."""
+    df_dia = df[(df['Fecha'].dt.date == fecha)]
+    if excluir_index is not None and excluir_index in df_dia.index:
+        df_dia = df_dia.drop(excluir_index)
+    return round(df_dia[integrante].sum(), 1) if integrante in df_dia.columns else 0.0
+
+# ===== 12. PDF =====
 def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None, es_protocolo=False):
     from reportlab.lib.pagesizes import letter
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
@@ -245,7 +319,28 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None, 
 
     doc.build(story); buf.seek(0); return buf
 
-# ===== 11. CONEXIÓN GOOGLE SHEETS =====
+# ===== 13. GRÁFICO DE COMPOSICIÓN — BARRAS HORIZONTALES (reemplaza a la torta) =====
+def grafico_composicion(df_res, columna_valor, titulo):
+    """
+    Barras horizontales ordenadas de mayor a menor. Reemplaza el gráfico de
+    torta/dona: con 8-11 categorías de tareas, comparar ángulos de un círculo
+    es mucho más difícil que comparar el largo de barras ordenadas.
+    """
+    df_plot = df_res[df_res[columna_valor] > 0].sort_values(columna_valor, ascending=True)
+    total = df_plot[columna_valor].sum()
+    df_plot['Porcentaje'] = (df_plot[columna_valor] / total * 100).round(1) if total > 0 else 0
+    df_plot['Etiqueta'] = df_plot.apply(lambda r: f"{r[columna_valor]} hs ({r['Porcentaje']}%)", axis=1)
+    fig = px.bar(
+        df_plot, x=columna_valor, y='Tarea', orientation='h',
+        text='Etiqueta', title=titulo, color=columna_valor,
+        color_continuous_scale=['#00b4d8', '#0077b6']
+    )
+    fig.update_traces(textposition='outside')
+    fig.update_layout(coloraxis_showscale=False, height=max(300, 35 * len(df_plot)),
+                       margin=dict(l=0, r=60, t=40, b=0), xaxis_title="Horas", yaxis_title="")
+    return fig
+
+# ===== 14. CONEXIÓN GOOGLE SHEETS =====
 @st.cache_resource
 def conectar():
     creds = Credentials.from_service_account_info(
@@ -261,7 +356,6 @@ def cargar_hoja(nombre):
         for c in df.columns:
             if 'fecha' in c.lower():
                 df[c] = pd.to_datetime(df[c], dayfirst=True, errors='coerce')
-        # Asegurar columna Subtarea
         if 'Subtarea' not in df.columns:
             df['Subtarea'] = ''
         return df, ws
@@ -290,8 +384,9 @@ def cargar_feriados():
 
 FERIADOS = cargar_feriados()
 
-# ===== 12. ESTADO INICIAL =====
+# ===== 15. ESTADO INICIAL =====
 COLUMNAS_BASE = ['Fecha', 'Tarea', 'Subtarea'] + OPERARIOS_FIJOS + ['Nota']
+COLUMNAS_COMPETENCIAS = ['Integrante', 'Tarea', 'Subtarea', 'Sabe']
 
 if 'cargas' not in st.session_state:
     df, _ = cargar_hoja("Cargas")
@@ -302,10 +397,17 @@ if 'cargas' not in st.session_state:
     else:
         st.session_state.cargas = pd.DataFrame(columns=COLUMNAS_BASE)
 
+if 'competencias' not in st.session_state:
+    df_comp, _ = cargar_hoja("Competencias")
+    if not df_comp.empty:
+        st.session_state.competencias = df_comp
+    else:
+        st.session_state.competencias = pd.DataFrame(columns=COLUMNAS_COMPETENCIAS)
+
 if 'usuario_actual' not in st.session_state:
     st.session_state.usuario_actual = None
 
-# ===== 13. LOGIN =====
+# ===== 16. LOGIN =====
 if st.session_state.usuario_actual is None:
     st.title("🏛️ CRM Grupo Pressacco")
     u = st.selectbox("Usuario:", ["Seleccionar..."] + OPERARIOS_FIJOS + ["Admin - Ver todo"])
@@ -313,7 +415,7 @@ if st.session_state.usuario_actual is None:
         st.session_state.usuario_actual = u; st.rerun()
     st.stop()
 
-# ===== 14. ALERTA MENSUAL =====
+# ===== 17. ALERTA MENSUAL =====
 hoy = datetime.now()
 df_u = st.session_state.cargas.copy()
 df_u['Fecha'] = pd.to_datetime(df_u['Fecha'], errors='coerce')
@@ -332,15 +434,16 @@ if st.session_state.usuario_actual != "Admin - Ver todo":
     else:
         st.success(f"✅ ¡Objetivo de {total_obj} hs cumplido!")
 
-# ===== 15. NAVEGACIÓN =====
+# ===== 18. NAVEGACIÓN =====
 es_admin = st.session_state.usuario_actual == "Admin - Ver todo"
-menu_opciones = ["📊 Panel de Control", "➕ Cargar Horas", "📁 Carga Masiva", "📚 Manual", "📜 Protocolo", "⚙️ Reset"] if es_admin \
+menu_opciones = ["📊 Panel de Control", "➕ Cargar Horas", "📁 Carga Masiva", "🧩 Competencias",
+                  "📚 Manual", "📜 Protocolo", "⚙️ Reset"] if es_admin \
     else ["📊 Panel de Control", "➕ Cargar Mis Horas", "📚 Manual", "📜 Protocolo"]
 menu = st.sidebar.radio("Navegación", menu_opciones)
 if st.sidebar.button("Cerrar Sesión"):
     st.session_state.clear(); st.rerun()
 
-# ===== 16. PANEL DE CONTROL =====
+# ===== 19. PANEL DE CONTROL (REORGANIZADO EN PESTAÑAS) =====
 if "Panel de Control" in menu:
     st.title("📊 Análisis de Capacidad y Eficiencia")
 
@@ -355,195 +458,224 @@ if "Panel de Control" in menu:
     if 'Subtarea' not in df_p.columns:
         df_p['Subtarea'] = ''
     df_act = df_p[(df_p['Fecha'].dt.month == mes) & (df_p['Fecha'].dt.year == anio)]
+    df_comp = st.session_state.competencias
 
-    # --- KPIs ---
-    h_ina = df_act[df_act['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)][p_sel].sum()
-    cap = capacidad_neta(anio, mes, FERIADOS, h_ina)
-    total_cargado = round(df_act[p_sel].sum(), 1)
-    h_disp = df_act[df_act['Tarea'].isin(TAREAS_DISPONIBILIDAD)][p_sel].sum()
-    disp_pct = round((h_disp / cap * 100) if cap > 0 else 0, 1)
-    util_pct = round(((total_cargado - h_disp) / cap * 100) if cap > 0 else 0, 1)
+    tabs_labels = ["🟢 Resumen", "🔍 Análisis Individual", "🗂️ Comparativas"] + (["🌐 Equipo"] if es_admin else [])
+    tabs = st.tabs(tabs_labels)
 
-    k1, k2, k3, k4 = st.columns(4)
-    with k1: st.markdown(f'<div class="kpi-card"><h2>{total_cargado}</h2><p>Horas Cargadas</p></div>', unsafe_allow_html=True)
-    with k2: st.markdown(f'<div class="kpi-card"><h2>{cap}</h2><p>Capacidad Neta</p></div>', unsafe_allow_html=True)
-    with k3: st.markdown(f'<div class="kpi-card"><h2>{util_pct}%</h2><p>Utilización Real</p></div>', unsafe_allow_html=True)
-    with k4: st.markdown(f'<div class="kpi-card"><h2>{disp_pct}%</h2><p>Disponibilidad {semaforo_estado(disp_pct)}</p></div>', unsafe_allow_html=True)
+    # ---------- PESTAÑA 1: RESUMEN ----------
+    with tabs[0]:
+        h_ina = df_act[df_act['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)][p_sel].sum()
+        cap = capacidad_neta(anio, mes, FERIADOS, h_ina)
+        total_cargado = round(df_act[p_sel].sum(), 1)
+        h_disp = df_act[df_act['Tarea'].isin(TAREAS_DISPONIBILIDAD)][p_sel].sum()
+        disp_pct = round((h_disp / cap * 100) if cap > 0 else 0, 1)
+        util_pct = round(((total_cargado - h_disp) / cap * 100) if cap > 0 else 0, 1)
 
-    st.divider()
+        k1, k2, k3, k4 = st.columns(4)
+        with k1: st.markdown(f'<div class="kpi-card"><h2>{total_cargado}</h2><p>Horas Cargadas</p></div>', unsafe_allow_html=True)
+        with k2: st.markdown(f'<div class="kpi-card"><h2>{cap}</h2><p>Capacidad Neta</p></div>', unsafe_allow_html=True)
+        with k3: st.markdown(f'<div class="kpi-card"><h2>{util_pct}%</h2><p>Utilización Real</p></div>', unsafe_allow_html=True)
+        with k4: st.markdown(f'<div class="kpi-card"><h2>{disp_pct}%</h2><p>Disponibilidad {semaforo_estado(disp_pct)}</p></div>', unsafe_allow_html=True)
 
-    # --- ALERTAS AUTOMÁTICAS ---
-    alertas = generar_alertas(df_p, p_sel, anio, mes, FERIADOS)
-    if alertas:
-        st.subheader("🚨 Alertas Automáticas")
-        for a in alertas:
-            st.markdown(f'<div class="alerta-box">{a}</div>', unsafe_allow_html=True)
+        alertas = generar_alertas(df_p, p_sel, anio, mes, FERIADOS)
+        if alertas:
+            st.subheader("🚨 Alertas Automáticas")
+            for a in alertas:
+                st.markdown(f'<div class="alerta-box">{a}</div>', unsafe_allow_html=True)
+
         st.divider()
 
-    # --- ANÁLISIS DE DESVÍOS ---
-    st.subheader(f"📐 Desvío vs. Promedio Histórico — {p_sel}")
-    dev = calcular_desvio(df_p, p_sel, mes, anio)
-    if not dev.empty:
-        col_t, col_g = st.columns([1, 1])
-        with col_t:
-            def colorear(val):
-                if isinstance(val, (int, float)):
-                    if val > 0: return 'color: #2d6a4f; font-weight:600'
-                    elif val < 0: return 'color: #e63946; font-weight:600'
-                return ''
-            try:
-                styled = dev.style.map(colorear, subset=['Desvío (hs)', 'Desvío (%)'])
-            except AttributeError:
-                styled = dev.style.applymap(colorear, subset=['Desvío (hs)', 'Desvío (%)'])
-            st.dataframe(styled, use_container_width=True, hide_index=True)
-        with col_g:
-            fig_dev = px.bar(dev, x='Desvío (hs)', y='Tarea', orientation='h',
-                             color='Desvío (hs)', color_continuous_scale=['#e63946', '#adb5bd', '#2d6a4f'],
-                             title="Desvío en horas (actual vs. prom. histórico)")
-            fig_dev.update_layout(coloraxis_showscale=False, height=350, margin=dict(l=0, r=0, t=40, b=0))
-            st.plotly_chart(fig_dev, use_container_width=True)
-    else:
-        st.info("No hay datos históricos suficientes para calcular desvíos (se necesitan al menos 2 meses previos).")
+        # ----- VISTA DIARIA DEL EQUIPO -----
+        st.subheader("📅 Vista Diaria del Equipo")
+        st.caption("Elegí un día puntual para ver quién estaba saturado y quién podía dar una mano.")
+        fecha_vista = st.date_input("Día a analizar", value=hoy.date(), key="fecha_vista_diaria")
+        df_foto = foto_dia(df_p, fecha_vista)
 
-    st.divider()
+        for _, row in df_foto.iterrows():
+            st.markdown(
+                f'<div class="dia-card {row["_css"]}"><b>{row["Integrante"]}</b> — {row["Estado"]} '
+                f'| Cargado: {row["Horas Cargadas"]} hs | Margen: {row["Margen (hs)"]} hs<br>'
+                f'<small>{row["Tareas del día"]}</small></div>',
+                unsafe_allow_html=True
+            )
 
-    # --- TENDENCIA HISTÓRICA 6 MESES ---
-    st.subheader(f"📈 Tendencia Histórica — {p_sel} (últimos 6 meses)")
-    df_tend = tendencia_historica(df_p, p_sel, mes, anio)
-    if not df_tend.empty:
-        orden_meses = df_tend.sort_values('Orden', ascending=False)['Mes'].unique().tolist()
-        fig_tend = px.bar(df_tend, x='Mes', y='Horas', color='Tarea',
-                          category_orders={'Mes': orden_meses},
-                          title="Horas por tarea/subtarea — evolución mensual")
-        fig_tend.update_layout(barmode='stack', height=380, margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig_tend, use_container_width=True)
+        saturados = df_foto[df_foto['Estado'] == "🔴 Saturado"]
+        if not saturados.empty and es_admin:
+            st.markdown("**¿Quién puede ayudar?**")
+            for _, row_sat in saturados.iterrows():
+                op_sat = row_sat['Integrante']
+                df_dia_op = df_p[(df_p['Fecha'].dt.date == fecha_vista) & (df_p[op_sat] > 0)]
+                if df_dia_op.empty:
+                    continue
+                tarea_sat = df_dia_op.iloc[0]['Tarea']
+                subtarea_sat = df_dia_op.iloc[0].get('Subtarea', '')
+                candidatos = sugerir_ayuda(df_p, fecha_vista, tarea_sat, subtarea_sat, df_comp, excluir=op_sat)
+                etiqueta_sat = etiqueta_tarea(tarea_sat, subtarea_sat)
+                with st.expander(f"🔴 {op_sat} está saturada en «{etiqueta_sat}» — ¿quién puede ayudar?"):
+                    if candidatos.empty:
+                        st.warning(f"Nadie disponible **con la competencia de «{etiqueta_sat}»** ese día. "
+                                   f"Esto puede indicar una necesidad de capacitación cruzada o de contratación.")
+                    else:
+                        st.dataframe(candidatos, use_container_width=True, hide_index=True)
 
-    st.divider()
+    # ---------- PESTAÑA 2: ANÁLISIS INDIVIDUAL ----------
+    with tabs[1]:
+        st.subheader(f"📐 Desvío vs. Promedio Histórico — {p_sel}")
+        dev = calcular_desvio(df_p, p_sel, mes, anio)
+        if not dev.empty:
+            col_t, col_g = st.columns([1, 1])
+            with col_t:
+                def colorear(val):
+                    if isinstance(val, (int, float)):
+                        if val > 0: return 'color: #2d6a4f; font-weight:600'
+                        elif val < 0: return 'color: #e63946; font-weight:600'
+                    return ''
+                try:
+                    styled = dev.style.map(colorear, subset=['Desvío (hs)', 'Desvío (%)'])
+                except AttributeError:
+                    styled = dev.style.applymap(colorear, subset=['Desvío (hs)', 'Desvío (%)'])
+                st.dataframe(styled, use_container_width=True, hide_index=True)
+            with col_g:
+                fig_dev = px.bar(dev, x='Desvío (hs)', y='Tarea', orientation='h',
+                                 color='Desvío (hs)', color_continuous_scale=['#e63946', '#adb5bd', '#2d6a4f'],
+                                 title="Desvío en horas (actual vs. prom. histórico)")
+                fig_dev.update_layout(coloraxis_showscale=False, height=350, margin=dict(l=0, r=0, t=40, b=0))
+                st.plotly_chart(fig_dev, use_container_width=True)
+        else:
+            st.info("No hay datos históricos suficientes para calcular desvíos (se necesitan al menos 2 meses previos).")
 
-    # --- DISTRIBUCIÓN SEMANAL ---
-    st.subheader(f"📅 Distribución Semanal — {MESES_ES[mes]} {anio}")
-    df_sem = distribucion_semanal(df_p, p_sel, anio, mes)
-    if not df_sem.empty:
-        fig_sem = px.bar(df_sem, x='Semana', y=p_sel, color='Tarea',
-                         barmode='stack', title="Carga por semana")
-        fig_sem.update_layout(height=320, margin=dict(l=0, r=0, t=40, b=0))
-        st.plotly_chart(fig_sem, use_container_width=True)
-    else:
-        st.info("Sin datos para distribución semanal.")
+        st.divider()
+        st.subheader(f"📈 Tendencia Histórica — {p_sel} (últimos 6 meses)")
+        df_tend = tendencia_historica(df_p, p_sel, mes, anio)
+        if not df_tend.empty:
+            orden_meses = df_tend.sort_values('Orden', ascending=False)['Mes'].unique().tolist()
+            fig_tend = px.bar(df_tend, x='Mes', y='Horas', color='Tarea',
+                              category_orders={'Mes': orden_meses},
+                              title="Horas por tarea/subtarea — evolución mensual")
+            fig_tend.update_layout(barmode='stack', height=380, margin=dict(l=0, r=0, t=40, b=0))
+            st.plotly_chart(fig_tend, use_container_width=True)
 
-    st.divider()
+        st.divider()
+        st.subheader(f"📅 Distribución Semanal — {MESES_ES[mes]} {anio}")
+        df_sem = distribucion_semanal(df_p, p_sel, anio, mes)
+        if not df_sem.empty:
+            fig_sem = px.bar(df_sem, x='Semana', y=p_sel, color='Tarea',
+                             barmode='stack', title="Carga por semana")
+            fig_sem.update_layout(height=320, margin=dict(l=0, r=0, t=40, b=0))
+            st.plotly_chart(fig_sem, use_container_width=True)
+        else:
+            st.info("Sin datos para distribución semanal.")
 
-    # --- DONA INDIVIDUAL con subtareas ---
-    df_act2 = df_act.copy()
-    df_act2['Etiqueta'] = df_act2.apply(lambda r: etiqueta_tarea(r['Tarea'], r.get('Subtarea', '')), axis=1)
-    res_ind = df_act2.groupby('Etiqueta')[p_sel].sum().round(1).reset_index().rename(columns={'Etiqueta': 'Tarea'})
-    res_graf = res_ind[(res_ind[p_sel] > 0) & (~res_ind['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD))]
-    if not res_graf.empty:
-        st.subheader(f"🍩 Composición de Horas — {p_sel}")
-        col_g, col_m = st.columns([2, 1])
-        with col_g:
-            fig = px.pie(res_graf, values=p_sel, names='Tarea', hole=0.5,
-                         title=f"Distribución por Tarea/Subtarea — {p_sel}")
-            fig.update_traces(textposition='inside', textinfo='percent+label')
-            st.plotly_chart(fig, use_container_width=True)
-        with col_m:
-            if st.button("📥 PDF Mensual Individual"):
-                dat = [["Tarea/Subtarea", "Horas"]] + [[r['Tarea'], r[p_sel]] for _, r in res_ind.iterrows()] + [["TOTAL", total_cargado]]
-                st.download_button("Guardar Mensual",
-                    generar_pdf_base(f"Reporte {p_sel}", f"{MESES_ES[mes]} {anio}", [("Detalle", dat)],
-                                     incluir_grafico=res_ind.set_index('Tarea')[p_sel].to_dict()),
-                    f"Mensual_{p_sel}.pdf")
+        st.divider()
+        df_act2 = df_act.copy()
+        df_act2['Etiqueta'] = df_act2.apply(lambda r: etiqueta_tarea(r['Tarea'], r.get('Subtarea', '')), axis=1)
+        res_ind = df_act2.groupby('Etiqueta')[p_sel].sum().round(1).reset_index().rename(columns={'Etiqueta': 'Tarea'})
+        res_graf = res_ind[(res_ind[p_sel] > 0) & (~res_ind['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD))]
+        if not res_graf.empty:
+            st.subheader(f"📊 Composición de Horas — {p_sel}")
+            col_g, col_m = st.columns([2, 1])
+            with col_g:
+                fig = grafico_composicion(res_graf, p_sel, f"Distribución por Tarea/Subtarea — {p_sel}")
+                st.plotly_chart(fig, use_container_width=True)
+            with col_m:
+                if st.button("📥 PDF Mensual Individual"):
+                    dat = [["Tarea/Subtarea", "Horas"]] + [[r['Tarea'], r[p_sel]] for _, r in res_ind.iterrows()] + [["TOTAL", total_cargado]]
+                    st.download_button("Guardar Mensual",
+                        generar_pdf_base(f"Reporte {p_sel}", f"{MESES_ES[mes]} {anio}", [("Detalle", dat)],
+                                         incluir_grafico=res_ind.set_index('Tarea')[p_sel].to_dict()),
+                        f"Mensual_{p_sel}.pdf")
 
-    # --- COMPARATIVA TRIMESTRAL ---
-    st.divider()
-    st.subheader(f"🗂️ Comparativa Trimestral — {p_sel}")
-    comp_list = []; hist_pdf = {}
-    for i in range(3):
-        m_c = mes - i; a_c = anio
-        if m_c <= 0: m_c += 12; a_c -= 1
-        df_m = df_p[(df_p['Fecha'].dt.month == m_c) & (df_p['Fecha'].dt.year == a_c)]
-        h_ina_c = df_m[df_m['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)][p_sel].sum()
-        cap_n = capacidad_neta(a_c, m_c, FERIADOS, h_ina_c)
-        total_b = round(df_m[p_sel].sum(), 1)
-        h_disp_c = df_m[df_m['Tarea'].isin(TAREAS_DISPONIBILIDAD)][p_sel].sum()
-        disp_v = round((h_disp_c / cap_n * 100) if cap_n > 0 else 0, 1)
-        comp_list.append({"Mes": MESES_ES[m_c], "Carga": f"{total_b} hs", "Cap. Neta": f"{cap_n} hs",
-                           "Disponibilidad": f"{disp_v}%", "Estado": semaforo_estado(disp_v)})
-        df_m2 = df_m.copy()
-        df_m2['Etiqueta'] = df_m2.apply(lambda r: etiqueta_tarea(r['Tarea'], r.get('Subtarea', '')), axis=1)
-        hist_pdf[MESES_ES[m_c]] = df_m2.groupby('Etiqueta')[p_sel].sum().to_dict()
+    # ---------- PESTAÑA 3: COMPARATIVAS ----------
+    with tabs[2]:
+        st.subheader(f"🗂️ Comparativa Trimestral — {p_sel}")
+        comp_list = []; hist_pdf = {}
+        for i in range(3):
+            m_c = mes - i; a_c = anio
+            if m_c <= 0: m_c += 12; a_c -= 1
+            df_m = df_p[(df_p['Fecha'].dt.month == m_c) & (df_p['Fecha'].dt.year == a_c)]
+            h_ina_c = df_m[df_m['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)][p_sel].sum()
+            cap_n = capacidad_neta(a_c, m_c, FERIADOS, h_ina_c)
+            total_b = round(df_m[p_sel].sum(), 1)
+            h_disp_c = df_m[df_m['Tarea'].isin(TAREAS_DISPONIBILIDAD)][p_sel].sum()
+            disp_v = round((h_disp_c / cap_n * 100) if cap_n > 0 else 0, 1)
+            comp_list.append({"Mes": MESES_ES[m_c], "Carga": f"{total_b} hs", "Cap. Neta": f"{cap_n} hs",
+                               "Disponibilidad": f"{disp_v}%", "Estado": semaforo_estado(disp_v)})
+            df_m2 = df_m.copy()
+            df_m2['Etiqueta'] = df_m2.apply(lambda r: etiqueta_tarea(r['Tarea'], r.get('Subtarea', '')), axis=1)
+            hist_pdf[MESES_ES[m_c]] = df_m2.groupby('Etiqueta')[p_sel].sum().to_dict()
 
-    st.table(pd.DataFrame(comp_list))
-    if st.button("📥 PDF Trimestral Individual"):
-        tareas_u = sorted(list(set([t for m in hist_pdf for t in hist_pdf[m].keys()])))
-        meses_n = list(hist_pdf.keys()); rows = []; tot_m = [0.0] * len(meses_n)
-        for t in tareas_u:
-            f = [t]
-            for idx, m in enumerate(meses_n):
-                v = round(float(hist_pdf[m].get(t, 0)), 1); f.append(v); tot_m[idx] += v
-            rows.append(f)
-        rows.append(["TOTAL BRUTO"] + [round(x, 1) for x in tot_m])
-        st.download_button("Guardar Trimestral",
-            generar_pdf_base(f"Trimestral: {p_sel}", "Resumen 3 meses",
-                             [("Detalle", [["Tarea/Subtarea"] + meses_n] + rows)]),
-            f"Trimestral_{p_sel}.pdf")
-
-    # --- VISIÓN GLOBAL ADMIN ---
-    if es_admin:
-        st.divider(); st.subheader("🌐 Balance del Equipo")
-        df_bal = balance_equipo(df_p, anio, mes, FERIADOS)
-        st.dataframe(df_bal, use_container_width=True, hide_index=True)
-
-        df_heat = df_act[~df_act['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)].copy()
-        if not df_heat.empty:
-            df_heat['Etiqueta'] = df_heat.apply(lambda r: etiqueta_tarea(r['Tarea'], r.get('Subtarea', '')), axis=1)
-            heat_data = df_heat.groupby('Etiqueta')[OPERARIOS_FIJOS].sum().round(1)
-            fig_heat = go.Figure(data=go.Heatmap(
-                z=heat_data.values, x=heat_data.columns.tolist(), y=heat_data.index.tolist(),
-                colorscale='Blues', text=heat_data.values, texttemplate="%{text}",
-                showscale=True
-            ))
-            fig_heat.update_layout(title="Heatmap de Horas por Tarea/Subtarea e Integrante",
-                                   height=400, margin=dict(l=0, r=0, t=40, b=0))
-            st.plotly_chart(fig_heat, use_container_width=True)
-
-        df_eq = df_act[~df_act['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)].copy()
-        df_eq['Etiqueta'] = df_eq.apply(lambda r: etiqueta_tarea(r['Tarea'], r.get('Subtarea', '')), axis=1)
-        df_eq2 = df_eq.melt(id_vars=['Fecha', 'Tarea', 'Etiqueta'], value_vars=OPERARIOS_FIJOS, var_name='Op', value_name='Hs')
-        res_eq = df_eq2.groupby('Etiqueta')['Hs'].sum().reset_index().rename(columns={'Etiqueta': 'Tarea'})
-        fig_g = px.pie(res_eq, values='Hs', names='Tarea', hole=0.5, title="Total Horas Equipo (Netas)")
-        fig_g.update_traces(textposition='inside', textinfo='percent+label')
-        st.plotly_chart(fig_g, use_container_width=True)
-
-        if st.button("📥 PDF Global"):
-            hist_g = {}
-            for i in range(3):
-                m_c = mes - i; a_c = anio
-                if m_c <= 0: m_c += 12; a_c -= 1
-                df_m_g = df_p[(df_p['Fecha'].dt.month == m_c) & (df_p['Fecha'].dt.year == a_c)].copy()
-                df_m_g['Etiqueta'] = df_m_g.apply(lambda r: etiqueta_tarea(r['Tarea'], r.get('Subtarea', '')), axis=1)
-                df_net = df_m_g[~df_m_g['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)]
-                hist_g[MESES_ES[m_c]] = df_net.groupby('Etiqueta')[OPERARIOS_FIJOS].sum().sum(axis=1).to_dict()
-            tg = sorted(list(set([t for m in hist_g for t in hist_g[m].keys()])))
-            mg = list(hist_g.keys()); rg = []; totg = [0.0] * len(mg)
-            for t in tg:
+        st.table(pd.DataFrame(comp_list))
+        if st.button("📥 PDF Trimestral Individual"):
+            tareas_u = sorted(list(set([t for m in hist_pdf for t in hist_pdf[m].keys()])))
+            meses_n = list(hist_pdf.keys()); rows = []; tot_m = [0.0] * len(meses_n)
+            for t in tareas_u:
                 f = [t]
-                for idx, m in enumerate(mg):
-                    v = round(float(hist_g[m].get(t, 0)), 1); f.append(v); totg[idx] += v
-                rg.append(f)
-            rg.append(["TOTAL NETO"] + [round(x, 1) for x in totg])
-            st.download_button("Guardar Global",
-                generar_pdf_base("REPORTE GLOBAL", "Estudio Completo",
-                                 [("Consolidado", [["Tarea/Subtarea"] + mg] + rg)],
-                                 incluir_grafico=res_eq.set_index('Tarea')['Hs'].to_dict()),
-                "Global_Neto.pdf")
+                for idx, m in enumerate(meses_n):
+                    v = round(float(hist_pdf[m].get(t, 0)), 1); f.append(v); tot_m[idx] += v
+                rows.append(f)
+            rows.append(["TOTAL BRUTO"] + [round(x, 1) for x in tot_m])
+            st.download_button("Guardar Trimestral",
+                generar_pdf_base(f"Trimestral: {p_sel}", "Resumen 3 meses",
+                                 [("Detalle", [["Tarea/Subtarea"] + meses_n] + rows)]),
+                f"Trimestral_{p_sel}.pdf")
 
-# ===== 17. CARGA MASIVA =====
+    # ---------- PESTAÑA 4: EQUIPO (solo admin) ----------
+    if es_admin:
+        with tabs[3]:
+            st.subheader("🌐 Balance del Equipo")
+            df_bal = balance_equipo(df_p, anio, mes, FERIADOS)
+            st.dataframe(df_bal, use_container_width=True, hide_index=True)
+
+            df_heat = df_act[~df_act['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)].copy()
+            if not df_heat.empty:
+                df_heat['Etiqueta'] = df_heat.apply(lambda r: etiqueta_tarea(r['Tarea'], r.get('Subtarea', '')), axis=1)
+                heat_data = df_heat.groupby('Etiqueta')[OPERARIOS_FIJOS].sum().round(1)
+                fig_heat = go.Figure(data=go.Heatmap(
+                    z=heat_data.values, x=heat_data.columns.tolist(), y=heat_data.index.tolist(),
+                    colorscale='Blues', text=heat_data.values, texttemplate="%{text}",
+                    showscale=True
+                ))
+                fig_heat.update_layout(title="Heatmap de Horas por Tarea/Subtarea e Integrante",
+                                       height=400, margin=dict(l=0, r=0, t=40, b=0))
+                st.plotly_chart(fig_heat, use_container_width=True)
+
+            df_eq = df_act[~df_act['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)].copy()
+            df_eq['Etiqueta'] = df_eq.apply(lambda r: etiqueta_tarea(r['Tarea'], r.get('Subtarea', '')), axis=1)
+            df_eq2 = df_eq.melt(id_vars=['Fecha', 'Tarea', 'Etiqueta'], value_vars=OPERARIOS_FIJOS, var_name='Op', value_name='Hs')
+            res_eq = df_eq2.groupby('Etiqueta')['Hs'].sum().reset_index().rename(columns={'Etiqueta': 'Tarea'})
+            res_eq_graf = res_eq.rename(columns={'Hs': 'Total'})
+            if not res_eq_graf.empty and res_eq_graf['Total'].sum() > 0:
+                fig_g = grafico_composicion(res_eq_graf, 'Total', "Total Horas Equipo (Netas)")
+                st.plotly_chart(fig_g, use_container_width=True)
+
+            if st.button("📥 PDF Global"):
+                hist_g = {}
+                for i in range(3):
+                    m_c = mes - i; a_c = anio
+                    if m_c <= 0: m_c += 12; a_c -= 1
+                    df_m_g = df_p[(df_p['Fecha'].dt.month == m_c) & (df_p['Fecha'].dt.year == a_c)].copy()
+                    df_m_g['Etiqueta'] = df_m_g.apply(lambda r: etiqueta_tarea(r['Tarea'], r.get('Subtarea', '')), axis=1)
+                    df_net = df_m_g[~df_m_g['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)]
+                    hist_g[MESES_ES[m_c]] = df_net.groupby('Etiqueta')[OPERARIOS_FIJOS].sum().sum(axis=1).to_dict()
+                tg = sorted(list(set([t for m in hist_g for t in hist_g[m].keys()])))
+                mg = list(hist_g.keys()); rg = []; totg = [0.0] * len(mg)
+                for t in tg:
+                    f = [t]
+                    for idx, m in enumerate(mg):
+                        v = round(float(hist_g[m].get(t, 0)), 1); f.append(v); totg[idx] += v
+                    rg.append(f)
+                rg.append(["TOTAL NETO"] + [round(x, 1) for x in totg])
+                st.download_button("Guardar Global",
+                    generar_pdf_base("REPORTE GLOBAL", "Estudio Completo",
+                                     [("Consolidado", [["Tarea/Subtarea"] + mg] + rg)],
+                                     incluir_grafico=res_eq.set_index('Tarea')['Hs'].to_dict()),
+                    "Global_Neto.pdf")
+
+# ===== 20. CARGA MASIVA =====
 elif "Carga Masiva" in menu:
     st.title("📁 Distribución Masiva")
 
-    # Tarea y Subtarea fuera del form (mismo motivo que en Carga Individual:
-    # dentro de un st.form no se re-renderizan en vivo al cambiar la Tarea)
     t_m = st.selectbox("Tarea", list(COLORES_TAREAS.keys()), key="tarea_masiva")
     subs_m = SUBTAREAS.get(t_m, [])
     st_m = st.selectbox("Subtarea", subs_m, key="subtarea_masiva") if subs_m else None
@@ -561,19 +693,25 @@ elif "Carga Masiva" in menu:
                     fila = {'Fecha': d, 'Tarea': t_m, 'Subtarea': st_m if st_m else '—', 'Nota': 'Masiva'}
                     for o in OPERARIOS_FIJOS: fila[o] = h_d if o == u_m else 0
                     filas.append(fila)
+                df_check = st.session_state.cargas.copy()
+                df_check['Fecha'] = pd.to_datetime(df_check['Fecha'], errors='coerce')
+                dias_saturados = []
+                for d in rgo:
+                    ya_cargado = horas_cargadas_dia(df_check, u_m, d.date())
+                    if ya_cargado + h_d > HORAS_DIA_LABORAL:
+                        dias_saturados.append(d.strftime('%d/%m'))
+                if dias_saturados:
+                    st.warning(f"⚠️ {u_m} va a superar las {HORAS_DIA_LABORAL} hs diarias en: {', '.join(dias_saturados[:5])}"
+                               + (" y más..." if len(dias_saturados) > 5 else "") + ". Se guardó igual, revisá si corresponde.")
                 st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame(filas)], ignore_index=True)
                 if guardar_df("Cargas", st.session_state.cargas):
                     st.success("✅ Guardado."); time.sleep(1.5); st.rerun()
 
-# ===== 18. CARGA INDIVIDUAL =====
+# ===== 21. CARGA INDIVIDUAL =====
 elif "Cargar" in menu:
     st.title("➕ Registro de Horas")
     u_c = st.session_state.usuario_actual if not es_admin else st.selectbox("Persona:", OPERARIOS_FIJOS)
 
-    # ===== TAREA Y SUBTAREA FUERA DEL FORM =====
-    # (st.form "congela" los widgets internos hasta el submit; al elegir Tarea
-    # dentro del form, Streamlit no re-renderiza el selectbox de Subtarea en vivo.
-    # Por eso van afuera: cualquier cambio acá se refleja al instante.)
     f_t = st.selectbox("Tarea", list(COLORES_TAREAS.keys()), key="tarea_sel")
     subs_disponibles = SUBTAREAS.get(f_t, [])
     if subs_disponibles:
@@ -594,7 +732,6 @@ elif "Cargar" in menu:
             if 'Subtarea' not in df_check.columns:
                 df_check['Subtarea'] = ''
 
-            # Validación duplicado considerando subtarea
             duplicado = df_check[
                 (df_check['Fecha'].dt.date == f_fecha) &
                 (df_check['Tarea'] == f_t) &
@@ -604,10 +741,16 @@ elif "Cargar" in menu:
             if not duplicado.empty:
                 st.warning(f"⚠️ Ya existe una carga para {u_c} el {f_fecha.strftime('%d/%m/%Y')} en '{f_t} — {f_sub}'. Eliminá la anterior si querés reemplazarla.")
             else:
+                # Validación de saturación diaria REAL: suma TODAS las tareas ya
+                # cargadas ese día para esa persona, no solo esta entrada puntual.
+                ya_cargado_hoy = horas_cargadas_dia(df_check, u_c, f_fecha)
+                total_dia = round(ya_cargado_hoy + f_h, 1)
+                if total_dia > HORAS_DIA_LABORAL:
+                    st.warning(f"⚠️ {u_c} va a quedar con {total_dia} hs cargadas el {f_fecha.strftime('%d/%m/%Y')} "
+                               f"(máximo habitual: {HORAS_DIA_LABORAL} hs). Se guarda igual, revisá si corresponde.")
+
                 nueva = {'Fecha': f_fecha, 'Tarea': f_t, 'Subtarea': f_sub, 'Nota': f_n}
                 for op in OPERARIOS_FIJOS: nueva[op] = f_h if op == u_c else 0
-                if f_h > HORAS_DIA_LABORAL:
-                    st.warning(f"⚠️ Cargando {f_h} hs (máximo habitual: {HORAS_DIA_LABORAL} hs).")
                 st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame([nueva])], ignore_index=True)
                 guardar_df("Cargas", st.session_state.cargas)
                 st.success(f"✅ Guardado: {f_t}{' — ' + f_sub if f_sub != '—' else ''} | {f_h} hs")
@@ -630,21 +773,68 @@ elif "Cargar" in menu:
                 st.session_state.cargas.drop(i, inplace=True)
                 guardar_df("Cargas", st.session_state.cargas); st.rerun()
 
-# ===== 19. MANUAL =====
+# ===== 22. COMPETENCIAS (NUEVO — solo admin) =====
+elif "Competencias" in menu:
+    st.title("🧩 Matriz de Competencias")
+    st.caption("Por defecto se asume que TODOS saben hacer TODAS las tareas. Acá marcás únicamente las "
+               "EXCEPCIONES: quién NO sabe hacer determinada tarea/subtarea. Eso se usa para sugerir "
+               "reemplazos reales cuando alguien está saturado.")
+
+    df_comp = st.session_state.competencias.copy()
+
+    todas_combos = []
+    for tarea, subs in SUBTAREAS.items():
+        if subs:
+            for s in subs:
+                todas_combos.append((tarea, s))
+        else:
+            todas_combos.append((tarea, "—"))
+
+    op_edit = st.selectbox("Integrante", OPERARIOS_FIJOS)
+    st.write(f"Desmarcá lo que **{op_edit}** NO sabe hacer:")
+
+    cambios = {}
+    cols = st.columns(2)
+    for i, (tarea, sub) in enumerate(todas_combos):
+        etiqueta = etiqueta_tarea(tarea, sub)
+        ya_no_sabe = not tiene_competencia(df_comp, op_edit, tarea, sub)
+        with cols[i % 2]:
+            sabe_check = st.checkbox(etiqueta, value=not ya_no_sabe, key=f"comp_{op_edit}_{tarea}_{sub}")
+        cambios[(tarea, sub)] = sabe_check
+
+    if st.button("💾 Guardar Competencias"):
+        # Se reconstruye la matriz completa de excepciones (solo los "No")
+        filas_no = []
+        for (tarea, sub), sabe in cambios.items():
+            if not sabe:
+                filas_no.append({'Integrante': op_edit, 'Tarea': tarea, 'Subtarea': sub, 'Sabe': 'No'})
+
+        df_otros = df_comp[df_comp['Integrante'] != op_edit] if not df_comp.empty else pd.DataFrame(columns=COLUMNAS_COMPETENCIAS)
+        df_nueva = pd.concat([df_otros, pd.DataFrame(filas_no, columns=COLUMNAS_COMPETENCIAS)], ignore_index=True)
+        st.session_state.competencias = df_nueva
+        if guardar_df("Competencias", df_nueva):
+            st.success(f"✅ Competencias de {op_edit} actualizadas.")
+        else:
+            st.error("No se pudo guardar. Verificá que exista la hoja 'Competencias' en el Google Sheet "
+                     "con columnas: Integrante, Tarea, Subtarea, Sabe.")
+        time.sleep(1.2); st.rerun()
+
+# ===== 23. MANUAL =====
 elif "Manual" in menu:
     st.title("📚 Manual de Uso — CRM Capacidad Instalada")
-    st.markdown("**Versión 3.0** | Con sistema de Tarea + Subtarea.")
+    st.markdown("**Versión 4.0** | Con Vista Diaria del Equipo, Matriz de Competencias y Panel en pestañas.")
     st.divider()
 
     with st.expander("🎯 1. ¿Qué es el CRM?", expanded=False):
         st.markdown("""
-El CRM registra y analiza cómo se distribuye el tiempo del equipo, ahora con **subtareas** para mayor detalle.
+El CRM registra y analiza cómo se distribuye el tiempo del equipo, con **subtareas** para mayor detalle
+y una **Vista Diaria** para saber, día por día, quién está saturado y quién puede ayudar.
 
 **Para qué sirve:**
-- Ver si alguien está saturado 🔴 o tiene capacidad 🟢
-- Distinguir dentro de Impuestos si fue Anual o Mensual
+- Ver si alguien está saturado 🔴 o tiene capacidad 🟢, un día puntual o en el mes
+- Saber quién puede ayudar a quién, cruzando disponibilidad **y** si sabe hacer esa tarea
 - Detectar qué subtarea específica está consumiendo más horas
-- Generar reportes PDF detallados por tarea y subtarea
+- Generar reportes PDF detallados por tarea, subtarea y equipo
         """)
 
     with st.expander("🏷️ 2. Tareas y Subtareas", expanded=False):
@@ -662,11 +852,25 @@ El CRM registra y analiza cómo se distribuye el tiempo del equipo, ahora con **
 | **REUNIONES DE EQUIPO** | Sin subtareas |
 | **INASISTENCIA** | Sin subtareas |
 | **PLANIFICACIONES** | Sin subtareas |
-
-⚠️ Si la tarea no tiene subtareas, el campo no aparece en el formulario.
         """)
 
-    with st.expander("✍️ 3. Cómo Cargar Horas con Subtarea", expanded=False):
+    with st.expander("🧩 3. Matriz de Competencias", expanded=False):
+        st.markdown("""
+Por defecto se asume que **todos saben hacer todas las tareas**. Solo hay que marcar las excepciones
+(ej: "Maximiliano no sabe Sueldos — Liquidación") en el menú **🧩 Competencias** (solo Admin).
+
+Esto se usa automáticamente en la **Vista Diaria del Equipo**: cuando alguien está saturado, el sistema
+solo sugiere como reemplazo a quien tenga margen horario **y** sepa hacer esa tarea puntual.
+        """)
+
+    with st.expander("📅 4. Vista Diaria del Equipo", expanded=False):
+        st.markdown("""
+En **📊 Panel de Control → 🟢 Resumen**, elegí una fecha puntual y vas a ver el estado de las 4 personas
+ese día (saturado / ajustado / con margen), qué tareas hicieron, y si alguien está saturado, quién puede
+darle una mano (según disponibilidad y competencia).
+        """)
+
+    with st.expander("✍️ 5. Cómo Cargar Horas con Subtarea", expanded=False):
         st.markdown("""
 1. Ir a **➕ Cargar Mis Horas**
 2. Seleccionar **Fecha**
@@ -676,10 +880,10 @@ El CRM registra y analiza cómo se distribuye el tiempo del equipo, ahora con **
 6. Agregar **Nota** opcional
 7. Hacer clic en **Guardar**
 
-El historial muestra: `📅 10/06/2026 | IMPUESTOS — Mensual | 3 hs`
+Si con esa carga superás las 6 hs del día (sumando todo lo ya cargado), el sistema te avisa.
         """)
 
-# ===== 20. PROTOCOLO =====
+# ===== 24. PROTOCOLO =====
 elif "Protocolo" in menu:
     st.title("📜 Protocolo de Uso")
     if st.button("📥 Descargar Guía"):
@@ -687,7 +891,7 @@ elif "Protocolo" in menu:
             generar_pdf_base("PROTOCOLO CRM", "Manual de Procedimientos", [], es_protocolo=True),
             "Protocolo_Pressacco.pdf")
 
-# ===== 21. RESET =====
+# ===== 25. RESET =====
 elif "Reset" in menu:
     st.title("⚙️ Resetear Base")
     st.warning("⚠️ Esto borra TODOS los datos cargados. Asegurate de tener los PDFs descargados antes.")
