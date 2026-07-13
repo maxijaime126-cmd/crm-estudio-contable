@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
@@ -36,10 +37,12 @@ SUBTAREAS = {
 
 OPERARIOS_FIJOS = ["Natalia", "Maximiliano", "Athina", "Johana"]
 HORAS_DIA_LABORAL = 6
+HORAS_MAX_DIA = 12  # tope duro para evitar cargas absurdas (ej: 40hs en un día)
 TAREAS_DESCUENTO_CAPACIDAD = ["INASISTENCIA POR EXAMEN O TRAMITE"]
 TAREAS_DISPONIBILIDAD = ["DISPONIBLE", "PLANIFICACIONES/ORGANIZACIÓN/PROCEDIMIENTOS/INFORMES"]
 MESES_ES = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
             7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
+ANIOS_FERIADOS_A_CARGAR = [2024, 2025, 2026, 2027]  # agregar más a futuro, ver Manual
 
 # ===== 2. CSS PERSONALIZADO =====
 st.markdown("""
@@ -85,7 +88,6 @@ def semaforo_estado(disp_pct):
     else: return "🔴 Saturado"
 
 def semaforo_dia(margen_hs):
-    """Semáforo para el margen de un día puntual (hs libres respecto de las 6hs)."""
     if margen_hs <= 0: return "🔴 Saturado", "dia-rojo"
     elif margen_hs < 2: return "🟡 Ajustado", "dia-amarillo"
     else: return "🟢 Con margen", "dia-verde"
@@ -160,9 +162,11 @@ def balance_equipo(df, anio, mes, feriados):
         h_disp = df_m[df_m['Tarea'].isin(TAREAS_DISPONIBILIDAD)][op].sum()
         disp_pct = round((h_disp / cap * 100) if cap > 0 else 0, 1)
         util_pct = round(((total - h_disp) / cap * 100) if cap > 0 else 0, 1)
+        dias_sat, dias_tot = dias_saturados_mes(df, op, anio, mes, feriados)
         rows.append({
             'Integrante': op, 'Horas Cargadas': total, 'Capacidad Neta': cap,
             'Disponibilidad %': disp_pct, 'Utilización %': util_pct,
+            'Días Saturados': f"{dias_sat}/{dias_tot}",
             'Estado': semaforo_estado(disp_pct)
         })
     return pd.DataFrame(rows)
@@ -194,15 +198,15 @@ def generar_alertas(df, operario, anio, mes, feriados):
     if disp_pct < 10 and cap > 0:
         alertas.append(f"🔴 Saturación crítica: solo {round(disp_pct, 1)}% de disponibilidad este mes")
 
+    dias_sat, dias_tot = dias_saturados_mes(df, operario, anio, mes, feriados)
+    if dias_tot > 0 and dias_sat / dias_tot > 0.5:
+        alertas.append(f"🔴 Saturada {dias_sat} de {dias_tot} días hábiles del mes (más de la mitad).")
+
     return alertas
 
-# ===== 10. MATRIZ DE COMPETENCIAS (NUEVO) =====
+# ===== 10. MATRIZ DE COMPETENCIAS =====
 def tiene_competencia(df_comp, integrante, tarea, subtarea):
-    """
-    Por defecto se asume que TODOS saben hacer TODAS las tareas, salvo que exista
-    una fila explícita en la hoja 'Competencias' marcando 'No'. Así el admin solo
-    tiene que cargar las EXCEPCIONES (ej: Maximiliano - Sueldos - Liquidación - No).
-    """
+    """Se asume que todos saben todo, salvo una excepción explícita 'No' en la hoja."""
     if df_comp is None or df_comp.empty:
         return True
     sub_norm = subtarea if subtarea and str(subtarea).strip() not in ('', '—') else '—'
@@ -216,9 +220,28 @@ def tiene_competencia(df_comp, integrante, tarea, subtarea):
     valor = str(match.iloc[0].get('Sabe', 'Sí')).strip().lower()
     return valor not in ('no', 'false', '0')
 
-# ===== 11. VISTA DIARIA DEL EQUIPO (NUEVO) =====
+# ===== 11. VISTA DIARIA DEL EQUIPO Y SATURACIÓN =====
+def horas_cargadas_dia(df, integrante, fecha, excluir_index=None):
+    if df.empty or integrante not in df.columns:
+        return 0.0
+    df_dia = df[df['Fecha'].dt.date == fecha]
+    if excluir_index is not None and excluir_index in df_dia.index:
+        df_dia = df_dia.drop(excluir_index)
+    return round(df_dia[integrante].sum(), 1)
+
+def dias_saturados_mes(df, operario, anio, mes, feriados):
+    """Cuenta cuántos días hábiles del mes esa persona llegó/superó las 6hs."""
+    ini, fin = get_rango_mes(anio, mes)
+    dias_lab = pd.bdate_range(start=ini, end=fin, freq='C', holidays=feriados)
+    if df.empty:
+        return 0, len(dias_lab)
+    count_sat = 0
+    for d in dias_lab:
+        if horas_cargadas_dia(df, operario, d.date()) >= HORAS_DIA_LABORAL:
+            count_sat += 1
+    return count_sat, len(dias_lab)
+
 def foto_dia(df, fecha):
-    """Estado de los 4 integrantes para UN día puntual."""
     df_dia = df[df['Fecha'].dt.date == fecha]
     rows = []
     for op in OPERARIOS_FIJOS:
@@ -228,17 +251,13 @@ def foto_dia(df, fecha):
         tareas_dia = df_op.apply(lambda r: etiqueta_tarea(r['Tarea'], r.get('Subtarea', '')), axis=1).tolist()
         estado, css_class = semaforo_dia(margen)
         rows.append({
-            'Integrante': op,
-            'Horas Cargadas': total,
-            'Margen (hs)': max(margen, 0),
+            'Integrante': op, 'Horas Cargadas': total, 'Margen (hs)': max(margen, 0),
             'Tareas del día': ", ".join(tareas_dia) if tareas_dia else "Sin carga registrada",
-            'Estado': estado,
-            '_css': css_class
+            'Estado': estado, '_css': css_class
         })
     return pd.DataFrame(rows)
 
 def sugerir_ayuda(df, fecha, tarea_objetivo, subtarea_objetivo, df_comp, excluir=None):
-    """Quién tiene margen ESE día Y sabe hacer esa tarea/subtarea puntual."""
     df_dia = df[df['Fecha'].dt.date == fecha]
     candidatos = []
     for op in OPERARIOS_FIJOS:
@@ -253,14 +272,38 @@ def sugerir_ayuda(df, fecha, tarea_objetivo, subtarea_objetivo, df_comp, excluir
         return pd.DataFrame()
     return pd.DataFrame(candidatos).sort_values('Margen ese día (hs)', ascending=False).reset_index(drop=True)
 
-def horas_cargadas_dia(df, integrante, fecha, excluir_index=None):
-    """Suma TODAS las horas ya cargadas por una persona en un día (para validar saturación real)."""
-    df_dia = df[(df['Fecha'].dt.date == fecha)]
-    if excluir_index is not None and excluir_index in df_dia.index:
-        df_dia = df_dia.drop(excluir_index)
-    return round(df_dia[integrante].sum(), 1) if integrante in df_dia.columns else 0.0
+# ===== 12. PROYECCIÓN DE CAPACIDAD (NUEVO) =====
+def demanda_vs_capacidad(df, anio_ref, mes_ref, feriados, meses_atras=6):
+    """Demanda real (horas trabajadas, sin contar Disponible/Planificaciones) vs. capacidad neta total del equipo, mes a mes."""
+    rows = []
+    for i in range(meses_atras - 1, -1, -1):
+        m = mes_ref - i; a = anio_ref
+        if m <= 0: m += 12; a -= 1
+        df_m = df[(df['Fecha'].dt.month == m) & (df['Fecha'].dt.year == a)]
+        demanda_total = 0.0
+        capacidad_total = 0.0
+        for op in OPERARIOS_FIJOS:
+            h_ina = df_m[df_m['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)][op].sum()
+            cap = capacidad_neta(a, m, feriados, h_ina)
+            h_disp = df_m[df_m['Tarea'].isin(TAREAS_DISPONIBILIDAD)][op].sum()
+            demanda_total += (df_m[op].sum() - h_disp)
+            capacidad_total += cap
+        rows.append({'Mes': MESES_ES[m], 'Orden': meses_atras - 1 - i,
+                     'Demanda (hs)': round(demanda_total, 1), 'Capacidad (hs)': round(capacidad_total, 1)})
+    return pd.DataFrame(rows)
 
-# ===== 12. PDF =====
+def proyectar_tendencia(df_dc, meses_a_futuro=3):
+    """Ajuste lineal simple sobre la demanda histórica para proyectar meses futuros."""
+    if len(df_dc) < 3:
+        return None
+    x = df_dc['Orden'].values
+    y = df_dc['Demanda (hs)'].values
+    pendiente, ordenada = np.polyfit(x, y, 1)
+    x_futuro = np.arange(x.max() + 1, x.max() + 1 + meses_a_futuro)
+    y_futuro = pendiente * x_futuro + ordenada
+    return pendiente, y_futuro
+
+# ===== 13. PDF =====
 def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None, es_protocolo=False):
     from reportlab.lib.pagesizes import letter
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
@@ -319,13 +362,8 @@ def generar_pdf_base(titulo_doc, subtitulo, datos_tablas, incluir_grafico=None, 
 
     doc.build(story); buf.seek(0); return buf
 
-# ===== 13. GRÁFICO DE COMPOSICIÓN — BARRAS HORIZONTALES (reemplaza a la torta) =====
+# ===== 14. GRÁFICO DE COMPOSICIÓN — BARRAS HORIZONTALES =====
 def grafico_composicion(df_res, columna_valor, titulo):
-    """
-    Barras horizontales ordenadas de mayor a menor. Reemplaza el gráfico de
-    torta/dona: con 8-11 categorías de tareas, comparar ángulos de un círculo
-    es mucho más difícil que comparar el largo de barras ordenadas.
-    """
     df_plot = df_res[df_res[columna_valor] > 0].sort_values(columna_valor, ascending=True)
     total = df_plot[columna_valor].sum()
     df_plot['Porcentaje'] = (df_plot[columna_valor] / total * 100).round(1) if total > 0 else 0
@@ -340,7 +378,28 @@ def grafico_composicion(df_res, columna_valor, titulo):
                        margin=dict(l=0, r=60, t=40, b=0), xaxis_title="Horas", yaxis_title="")
     return fig
 
-# ===== 14. CONEXIÓN GOOGLE SHEETS =====
+# ===== 15. HEATMAP CALENDARIO DEL MES (NUEVO) =====
+def heatmap_calendario_mes(df, anio, mes, feriados):
+    ini, fin = get_rango_mes(anio, mes)
+    dias_lab = pd.bdate_range(start=ini, end=fin, freq='C', holidays=feriados)
+    z, etiquetas_dias = [], []
+    for d in dias_lab:
+        fila = [horas_cargadas_dia(df, op, d.date()) for op in OPERARIOS_FIJOS]
+        z.append(fila)
+        etiquetas_dias.append(d.strftime('%d/%m'))
+    if not z:
+        return None
+    fig = go.Figure(data=go.Heatmap(
+        z=z, x=OPERARIOS_FIJOS, y=etiquetas_dias,
+        colorscale=[[0, '#2d6a4f'], [0.5, '#e9c46a'], [1, '#e63946']],
+        zmin=0, zmax=HORAS_DIA_LABORAL, text=z, texttemplate="%{text}", showscale=True,
+        colorbar=dict(title="hs/día")
+    ))
+    fig.update_layout(title="Calendario de Saturación del Mes (hs cargadas por día)",
+                       height=max(400, 24 * len(etiquetas_dias)), margin=dict(l=0, r=0, t=40, b=0))
+    return fig
+
+# ===== 16. CONEXIÓN GOOGLE SHEETS (con manejo de errores explícito) =====
 @st.cache_resource
 def conectar():
     creds = Credentials.from_service_account_info(
@@ -358,11 +417,13 @@ def cargar_hoja(nombre):
                 df[c] = pd.to_datetime(df[c], dayfirst=True, errors='coerce')
         if 'Subtarea' not in df.columns:
             df['Subtarea'] = ''
-        return df, ws
-    except:
-        return pd.DataFrame(), None
+        return df, ws, None
+    except Exception as e:
+        return pd.DataFrame(), None, str(e)
 
 def guardar_df(nombre, df):
+    """Reescribe la hoja completa. Usar solo para ediciones/borrados/reset/competencias
+    (operaciones poco frecuentes), NO para altas nuevas — ver agregar_filas()."""
     try:
         ws = conectar().worksheet(nombre); ws.clear()
         df_c = df.copy()
@@ -370,52 +431,91 @@ def guardar_df(nombre, df):
             if 'fecha' in c.lower():
                 df_c[c] = pd.to_datetime(df_c[c], errors='coerce').dt.strftime('%d/%m/%Y')
         ws.update([df_c.columns.values.tolist()] + df_c.fillna('').astype(str).values.tolist())
-        st.cache_data.clear(); return True
-    except:
-        return False
+        st.cache_data.clear()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+def agregar_filas(nombre, filas, columnas):
+    """Agrega filas nuevas SIN reescribir toda la hoja (evita pisar datos de otra
+    persona que haya guardado casi al mismo tiempo)."""
+    try:
+        ws = conectar().worksheet(nombre)
+        filas_fmt = []
+        for fila_dict in filas:
+            f = fila_dict.copy()
+            for c in columnas:
+                if 'fecha' in c.lower() and c in f:
+                    v = f[c]
+                    f[c] = pd.to_datetime(v, errors='coerce').strftime('%d/%m/%Y') if pd.notna(v) else ''
+            filas_fmt.append([str(f.get(c, '')) for c in columnas])
+        ws.append_rows(filas_fmt, value_input_option='USER_ENTERED')
+        st.cache_data.clear()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+def mostrar_error_tecnico(mensaje):
+    if mensaje:
+        with st.expander("⚠️ Ver detalle técnico del error"):
+            st.code(mensaje)
 
 @st.cache_data
-def cargar_feriados():
-    try:
-        df_f = pd.read_csv("feriados_2026.csv"); df_f.columns = df_f.columns.str.strip().str.lower()
-        return pd.to_datetime(df_f['fecha'], errors='coerce').dt.date.dropna().tolist()
-    except:
-        return []
+def cargar_feriados_multi(anios):
+    feriados = []
+    errores = []
+    for a in anios:
+        try:
+            df_f = pd.read_csv(f"feriados_{a}.csv")
+            df_f.columns = df_f.columns.str.strip().str.lower()
+            feriados += pd.to_datetime(df_f['fecha'], errors='coerce').dt.date.dropna().tolist()
+        except Exception:
+            errores.append(a)
+            continue
+    return feriados
 
-FERIADOS = cargar_feriados()
+FERIADOS = cargar_feriados_multi(ANIOS_FERIADOS_A_CARGAR)
 
-# ===== 15. ESTADO INICIAL =====
+# ===== 17. ESTADO INICIAL =====
 COLUMNAS_BASE = ['Fecha', 'Tarea', 'Subtarea'] + OPERARIOS_FIJOS + ['Nota']
 COLUMNAS_COMPETENCIAS = ['Integrante', 'Tarea', 'Subtarea', 'Sabe']
 
 if 'cargas' not in st.session_state:
-    df, _ = cargar_hoja("Cargas")
+    df, _, err = cargar_hoja("Cargas")
     if not df.empty:
         if 'Subtarea' not in df.columns:
             df['Subtarea'] = ''
         st.session_state.cargas = df
     else:
         st.session_state.cargas = pd.DataFrame(columns=COLUMNAS_BASE)
+    st.session_state.error_carga_inicial = err
 
 if 'competencias' not in st.session_state:
-    df_comp, _ = cargar_hoja("Competencias")
-    if not df_comp.empty:
-        st.session_state.competencias = df_comp
-    else:
-        st.session_state.competencias = pd.DataFrame(columns=COLUMNAS_COMPETENCIAS)
+    df_comp, _, err_comp = cargar_hoja("Competencias")
+    st.session_state.competencias = df_comp if not df_comp.empty else pd.DataFrame(columns=COLUMNAS_COMPETENCIAS)
 
 if 'usuario_actual' not in st.session_state:
     st.session_state.usuario_actual = None
+if 'editando_idx' not in st.session_state:
+    st.session_state.editando_idx = None
 
-# ===== 16. LOGIN =====
+# ===== 18. LOGIN CON CONTRASEÑA =====
 if st.session_state.usuario_actual is None:
     st.title("🏛️ CRM Grupo Pressacco")
     u = st.selectbox("Usuario:", ["Seleccionar..."] + OPERARIOS_FIJOS + ["Admin - Ver todo"])
+    pwd = st.text_input("Contraseña:", type="password")
     if st.button("Ingresar") and u != "Seleccionar...":
-        st.session_state.usuario_actual = u; st.rerun()
+        claves = st.secrets.get("passwords", {})
+        clave_correcta = claves.get(u)
+        if clave_correcta is None:
+            st.error("No hay contraseña configurada para este usuario. Pedile al Admin que la agregue en Secrets.")
+        elif pwd == clave_correcta:
+            st.session_state.usuario_actual = u; st.rerun()
+        else:
+            st.error("Contraseña incorrecta.")
     st.stop()
 
-# ===== 17. ALERTA MENSUAL =====
+# ===== 19. ALERTA MENSUAL =====
 hoy = datetime.now()
 df_u = st.session_state.cargas.copy()
 df_u['Fecha'] = pd.to_datetime(df_u['Fecha'], errors='coerce')
@@ -434,7 +534,7 @@ if st.session_state.usuario_actual != "Admin - Ver todo":
     else:
         st.success(f"✅ ¡Objetivo de {total_obj} hs cumplido!")
 
-# ===== 18. NAVEGACIÓN =====
+# ===== 20. NAVEGACIÓN =====
 es_admin = st.session_state.usuario_actual == "Admin - Ver todo"
 menu_opciones = ["📊 Panel de Control", "➕ Cargar Horas", "📁 Carga Masiva", "🧩 Competencias",
                   "📚 Manual", "📜 Protocolo", "⚙️ Reset"] if es_admin \
@@ -443,12 +543,12 @@ menu = st.sidebar.radio("Navegación", menu_opciones)
 if st.sidebar.button("Cerrar Sesión"):
     st.session_state.clear(); st.rerun()
 
-# ===== 19. PANEL DE CONTROL (REORGANIZADO EN PESTAÑAS) =====
+# ===== 21. PANEL DE CONTROL =====
 if "Panel de Control" in menu:
     st.title("📊 Análisis de Capacidad y Eficiencia")
 
     c1, c2, c3 = st.columns([1, 1, 2])
-    with c1: anio = st.selectbox("Año", [2025, 2026], index=1)
+    with c1: anio = st.selectbox("Año", [2025, 2026, 2027], index=1)
     with c2: mes = st.selectbox("Mes", list(range(1, 13)), format_func=lambda x: MESES_ES[x], index=hoy.month - 1)
     with c3:
         p_sel = st.selectbox("Integrante:", OPERARIOS_FIJOS) if es_admin else st.session_state.usuario_actual
@@ -460,7 +560,7 @@ if "Panel de Control" in menu:
     df_act = df_p[(df_p['Fecha'].dt.month == mes) & (df_p['Fecha'].dt.year == anio)]
     df_comp = st.session_state.competencias
 
-    tabs_labels = ["🟢 Resumen", "🔍 Análisis Individual", "🗂️ Comparativas"] + (["🌐 Equipo"] if es_admin else [])
+    tabs_labels = ["🟢 Resumen", "🔍 Análisis Individual", "🗂️ Comparativas"] + (["🌐 Equipo", "📈 Proyección"] if es_admin else [])
     tabs = st.tabs(tabs_labels)
 
     # ---------- PESTAÑA 1: RESUMEN ----------
@@ -471,12 +571,14 @@ if "Panel de Control" in menu:
         h_disp = df_act[df_act['Tarea'].isin(TAREAS_DISPONIBILIDAD)][p_sel].sum()
         disp_pct = round((h_disp / cap * 100) if cap > 0 else 0, 1)
         util_pct = round(((total_cargado - h_disp) / cap * 100) if cap > 0 else 0, 1)
+        dias_sat, dias_tot = dias_saturados_mes(df_p, p_sel, anio, mes, FERIADOS)
 
-        k1, k2, k3, k4 = st.columns(4)
+        k1, k2, k3, k4, k5 = st.columns(5)
         with k1: st.markdown(f'<div class="kpi-card"><h2>{total_cargado}</h2><p>Horas Cargadas</p></div>', unsafe_allow_html=True)
         with k2: st.markdown(f'<div class="kpi-card"><h2>{cap}</h2><p>Capacidad Neta</p></div>', unsafe_allow_html=True)
         with k3: st.markdown(f'<div class="kpi-card"><h2>{util_pct}%</h2><p>Utilización Real</p></div>', unsafe_allow_html=True)
         with k4: st.markdown(f'<div class="kpi-card"><h2>{disp_pct}%</h2><p>Disponibilidad {semaforo_estado(disp_pct)}</p></div>', unsafe_allow_html=True)
+        with k5: st.markdown(f'<div class="kpi-card"><h2>{dias_sat}/{dias_tot}</h2><p>Días Saturados del Mes</p></div>', unsafe_allow_html=True)
 
         alertas = generar_alertas(df_p, p_sel, anio, mes, FERIADOS)
         if alertas:
@@ -486,7 +588,6 @@ if "Panel de Control" in menu:
 
         st.divider()
 
-        # ----- VISTA DIARIA DEL EQUIPO -----
         st.subheader("📅 Vista Diaria del Equipo")
         st.caption("Elegí un día puntual para ver quién estaba saturado y quién podía dar una mano.")
         fecha_vista = st.date_input("Día a analizar", value=hoy.date(), key="fecha_vista_diaria")
@@ -627,6 +728,11 @@ if "Panel de Control" in menu:
             df_bal = balance_equipo(df_p, anio, mes, FERIADOS)
             st.dataframe(df_bal, use_container_width=True, hide_index=True)
 
+            st.divider()
+            fig_cal = heatmap_calendario_mes(df_p, anio, mes, FERIADOS)
+            if fig_cal:
+                st.plotly_chart(fig_cal, use_container_width=True)
+
             df_heat = df_act[~df_act['Tarea'].isin(TAREAS_DESCUENTO_CAPACIDAD)].copy()
             if not df_heat.empty:
                 df_heat['Etiqueta'] = df_heat.apply(lambda r: etiqueta_tarea(r['Tarea'], r.get('Subtarea', '')), axis=1)
@@ -672,7 +778,48 @@ if "Panel de Control" in menu:
                                      incluir_grafico=res_eq.set_index('Tarea')['Hs'].to_dict()),
                     "Global_Neto.pdf")
 
-# ===== 20. CARGA MASIVA =====
+        # ---------- PESTAÑA 5: PROYECCIÓN DE CAPACIDAD (NUEVO, solo admin) ----------
+        with tabs[4]:
+            st.subheader("📈 Proyección de Capacidad — Demanda vs. Capacidad del Equipo")
+            st.caption("Pensado para la reunión de contratación: ¿la demanda está creciendo más rápido que la capacidad?")
+            meses_hist_sel = st.slider("Meses de historia a considerar", 3, 12, 6)
+            df_dc = demanda_vs_capacidad(df_p, anio, mes, FERIADOS, meses_atras=meses_hist_sel)
+
+            if df_dc.empty or df_dc['Demanda (hs)'].sum() == 0:
+                st.info("No hay datos suficientes todavía para proyectar (necesitás al menos 3 meses cargados).")
+            else:
+                fig_proy = go.Figure()
+                fig_proy.add_trace(go.Scatter(x=df_dc['Mes'], y=df_dc['Demanda (hs)'], name='Demanda real',
+                                               mode='lines+markers', line=dict(color='#e63946', width=3)))
+                fig_proy.add_trace(go.Scatter(x=df_dc['Mes'], y=df_dc['Capacidad (hs)'], name='Capacidad neta del equipo',
+                                               mode='lines+markers', line=dict(color='#0077b6', width=3, dash='dot')))
+
+                resultado = proyectar_tendencia(df_dc, meses_a_futuro=3)
+                if resultado:
+                    pendiente, y_futuro = resultado
+                    ultima_cap = df_dc['Capacidad (hs)'].iloc[-1]
+                    meses_futuros = [f"+{i+1}" for i in range(len(y_futuro))]
+                    fig_proy.add_trace(go.Scatter(x=meses_futuros, y=y_futuro, name='Demanda proyectada',
+                                                   mode='lines+markers', line=dict(color='#e63946', width=2, dash='dash')))
+
+                    brecha = round(y_futuro[-1] - ultima_cap, 1)
+                    tendencia_txt = "creciendo" if pendiente > 0 else ("estable" if abs(pendiente) < 1 else "bajando")
+                    st.metric(f"Demanda proyectada en 3 meses vs. capacidad actual",
+                              f"{round(y_futuro[-1],1)} hs", delta=f"{brecha:+.1f} hs vs. capacidad de hoy")
+                    if brecha > 0:
+                        st.warning(f"⚠️ Si la tendencia actual se mantiene (demanda {tendencia_txt} a razón de "
+                                   f"{round(pendiente,1)} hs/mes), en 3 meses la demanda superaría la capacidad "
+                                   f"neta actual por **{brecha} hs** — señal de que podría hacer falta sumar personal.")
+                    else:
+                        st.success(f"✅ La demanda está {tendencia_txt}. Con la capacidad actual del equipo alcanzaría "
+                                   f"para absorber la proyección de los próximos 3 meses.")
+
+                fig_proy.update_layout(title="Demanda real vs. Capacidad neta — histórico y proyección",
+                                        height=420, margin=dict(l=0, r=0, t=40, b=0), yaxis_title="Horas")
+                st.plotly_chart(fig_proy, use_container_width=True)
+                st.dataframe(df_dc[['Mes', 'Demanda (hs)', 'Capacidad (hs)']], use_container_width=True, hide_index=True)
+
+# ===== 22. CARGA MASIVA =====
 elif "Carga Masiva" in menu:
     st.title("📁 Distribución Masiva")
 
@@ -684,30 +831,34 @@ elif "Carga Masiva" in menu:
         u_m = st.selectbox("Persona", OPERARIOS_FIJOS)
         st.write(f"**Tarea:** {t_m}" + (f" — {st_m}" if st_m else ""))
         f_i = st.date_input("Desde"); f_f = st.date_input("Hasta")
-        h_t = st.number_input("Horas Totales", min_value=0.0)
+        h_t = st.number_input("Horas Totales", min_value=0.0, max_value=float(HORAS_MAX_DIA) * 60)
         if st.form_submit_button("Ejecutar"):
             rgo = pd.bdate_range(start=f_i, end=f_f, freq='C', holidays=FERIADOS)
             if len(rgo) > 0:
-                h_d = round(h_t / len(rgo), 2); filas = []
-                for d in rgo:
-                    fila = {'Fecha': d, 'Tarea': t_m, 'Subtarea': st_m if st_m else '—', 'Nota': 'Masiva'}
-                    for o in OPERARIOS_FIJOS: fila[o] = h_d if o == u_m else 0
-                    filas.append(fila)
+                h_d = round(h_t / len(rgo), 2)
                 df_check = st.session_state.cargas.copy()
                 df_check['Fecha'] = pd.to_datetime(df_check['Fecha'], errors='coerce')
                 dias_saturados = []
+                filas = []
                 for d in rgo:
                     ya_cargado = horas_cargadas_dia(df_check, u_m, d.date())
                     if ya_cargado + h_d > HORAS_DIA_LABORAL:
                         dias_saturados.append(d.strftime('%d/%m'))
+                    fila = {'Fecha': d, 'Tarea': t_m, 'Subtarea': st_m if st_m else '—', 'Nota': 'Masiva'}
+                    for o in OPERARIOS_FIJOS: fila[o] = h_d if o == u_m else 0
+                    filas.append(fila)
                 if dias_saturados:
                     st.warning(f"⚠️ {u_m} va a superar las {HORAS_DIA_LABORAL} hs diarias en: {', '.join(dias_saturados[:5])}"
                                + (" y más..." if len(dias_saturados) > 5 else "") + ". Se guardó igual, revisá si corresponde.")
                 st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame(filas)], ignore_index=True)
-                if guardar_df("Cargas", st.session_state.cargas):
+                ok, err = agregar_filas("Cargas", filas, COLUMNAS_BASE)
+                if ok:
                     st.success("✅ Guardado."); time.sleep(1.5); st.rerun()
+                else:
+                    st.error("No se pudo guardar en Google Sheets. Los datos quedaron en tu sesión pero no se sincronizaron.")
+                    mostrar_error_tecnico(err)
 
-# ===== 21. CARGA INDIVIDUAL =====
+# ===== 23. CARGA INDIVIDUAL (con edición) =====
 elif "Cargar" in menu:
     st.title("➕ Registro de Horas")
     u_c = st.session_state.usuario_actual if not es_admin else st.selectbox("Persona:", OPERARIOS_FIJOS)
@@ -723,7 +874,7 @@ elif "Cargar" in menu:
     with st.form("fi"):
         f_fecha = st.date_input("Fecha", value=datetime.now())
         st.write(f"**Tarea seleccionada:** {f_t}" + (f" — {f_sub}" if f_sub != "—" else ""))
-        f_h = st.number_input("Horas", step=0.5, value=6.0)
+        f_h = st.number_input("Horas", step=0.5, value=6.0, min_value=0.5, max_value=float(HORAS_MAX_DIA))
         f_n = st.text_input("Nota")
 
         if st.form_submit_button("Guardar"):
@@ -739,10 +890,8 @@ elif "Cargar" in menu:
                 (df_check[u_c] > 0)
             ]
             if not duplicado.empty:
-                st.warning(f"⚠️ Ya existe una carga para {u_c} el {f_fecha.strftime('%d/%m/%Y')} en '{f_t} — {f_sub}'. Eliminá la anterior si querés reemplazarla.")
+                st.warning(f"⚠️ Ya existe una carga para {u_c} el {f_fecha.strftime('%d/%m/%Y')} en '{f_t} — {f_sub}'. Usá 'Editar' en el historial si querés cambiarla.")
             else:
-                # Validación de saturación diaria REAL: suma TODAS las tareas ya
-                # cargadas ese día para esa persona, no solo esta entrada puntual.
                 ya_cargado_hoy = horas_cargadas_dia(df_check, u_c, f_fecha)
                 total_dia = round(ya_cargado_hoy + f_h, 1)
                 if total_dia > HORAS_DIA_LABORAL:
@@ -752,9 +901,13 @@ elif "Cargar" in menu:
                 nueva = {'Fecha': f_fecha, 'Tarea': f_t, 'Subtarea': f_sub, 'Nota': f_n}
                 for op in OPERARIOS_FIJOS: nueva[op] = f_h if op == u_c else 0
                 st.session_state.cargas = pd.concat([st.session_state.cargas, pd.DataFrame([nueva])], ignore_index=True)
-                guardar_df("Cargas", st.session_state.cargas)
-                st.success(f"✅ Guardado: {f_t}{' — ' + f_sub if f_sub != '—' else ''} | {f_h} hs")
-                time.sleep(1); st.rerun()
+                ok, err = agregar_filas("Cargas", [nueva], COLUMNAS_BASE)
+                if ok:
+                    st.success(f"✅ Guardado: {f_t}{' — ' + f_sub if f_sub != '—' else ''} | {f_h} hs")
+                    time.sleep(1); st.rerun()
+                else:
+                    st.error("No se pudo sincronizar con Google Sheets. Quedó guardado solo en tu sesión actual.")
+                    mostrar_error_tecnico(err)
 
     st.divider()
     mes_f = st.selectbox("Historial Mes:", list(range(1, 13)), format_func=lambda x: MESES_ES[x], index=hoy.month - 1)
@@ -767,18 +920,62 @@ elif "Cargar" in menu:
         st.info(f"**Total {MESES_ES[mes_f]}:** {round(df_f[u_c].sum(), 1)} hs")
         for i, r in df_f.sort_values('Fecha', ascending=False).iterrows():
             sub_label = f" — {r['Subtarea']}" if str(r.get('Subtarea', '')).strip() and r.get('Subtarea', '') != '—' else ''
-            c1, c2 = st.columns([6, 1])
+            c1, c2, c3 = st.columns([5, 1, 1])
             c1.write(f"📅 {r['Fecha'].strftime('%d/%m/%Y')} | {r['Tarea']}{sub_label} | {r[u_c]} hs | {r['Nota']}")
-            if c2.button("Eliminar", key=f"del_{i}"):
+            if c2.button("Editar", key=f"edit_{i}"):
+                st.session_state.editando_idx = i; st.rerun()
+            if c3.button("Eliminar", key=f"del_{i}"):
                 st.session_state.cargas.drop(i, inplace=True)
-                guardar_df("Cargas", st.session_state.cargas); st.rerun()
+                ok, err = guardar_df("Cargas", st.session_state.cargas)
+                if ok:
+                    st.rerun()
+                else:
+                    st.error("No se pudo eliminar en Google Sheets.")
+                    mostrar_error_tecnico(err)
 
-# ===== 22. COMPETENCIAS (NUEVO — solo admin) =====
+    # ----- FORMULARIO DE EDICIÓN -----
+    if st.session_state.editando_idx is not None and st.session_state.editando_idx in st.session_state.cargas.index:
+        idx = st.session_state.editando_idx
+        row = st.session_state.cargas.loc[idx]
+        st.divider()
+        st.markdown("### ✏️ Editando carga")
+        with st.form("form_editar"):
+            e_fecha = st.date_input("Fecha", value=pd.to_datetime(row['Fecha']).date())
+            lista_tareas = list(COLORES_TAREAS.keys())
+            e_tarea = st.selectbox("Tarea", lista_tareas, index=lista_tareas.index(row['Tarea']) if row['Tarea'] in lista_tareas else 0)
+            subs_e = SUBTAREAS.get(e_tarea, [])
+            if subs_e:
+                e_sub = st.selectbox("Subtarea", subs_e, index=subs_e.index(row['Subtarea']) if row['Subtarea'] in subs_e else 0)
+            else:
+                e_sub = "—"
+            e_horas = st.number_input("Horas", step=0.5, value=float(row[u_c]) if row[u_c] else 0.5, min_value=0.5, max_value=float(HORAS_MAX_DIA))
+            e_nota = st.text_input("Nota", value=str(row.get('Nota', '')))
+            cg1, cg2 = st.columns(2)
+            guardar_edit = cg1.form_submit_button("💾 Guardar cambios")
+            cancelar_edit = cg2.form_submit_button("Cancelar")
+
+            if guardar_edit:
+                st.session_state.cargas.loc[idx, 'Fecha'] = e_fecha
+                st.session_state.cargas.loc[idx, 'Tarea'] = e_tarea
+                st.session_state.cargas.loc[idx, 'Subtarea'] = e_sub
+                st.session_state.cargas.loc[idx, u_c] = e_horas
+                st.session_state.cargas.loc[idx, 'Nota'] = e_nota
+                ok, err = guardar_df("Cargas", st.session_state.cargas)
+                if ok:
+                    st.success("✅ Carga actualizada.")
+                    st.session_state.editando_idx = None
+                    time.sleep(1); st.rerun()
+                else:
+                    st.error("No se pudo guardar el cambio en Google Sheets.")
+                    mostrar_error_tecnico(err)
+            if cancelar_edit:
+                st.session_state.editando_idx = None; st.rerun()
+
+# ===== 24. COMPETENCIAS (solo admin) =====
 elif "Competencias" in menu:
     st.title("🧩 Matriz de Competencias")
     st.caption("Por defecto se asume que TODOS saben hacer TODAS las tareas. Acá marcás únicamente las "
-               "EXCEPCIONES: quién NO sabe hacer determinada tarea/subtarea. Eso se usa para sugerir "
-               "reemplazos reales cuando alguien está saturado.")
+               "EXCEPCIONES: quién NO sabe hacer determinada tarea/subtarea.")
 
     df_comp = st.session_state.competencias.copy()
 
@@ -803,7 +1000,6 @@ elif "Competencias" in menu:
         cambios[(tarea, sub)] = sabe_check
 
     if st.button("💾 Guardar Competencias"):
-        # Se reconstruye la matriz completa de excepciones (solo los "No")
         filas_no = []
         for (tarea, sub), sabe in cambios.items():
             if not sabe:
@@ -812,78 +1008,69 @@ elif "Competencias" in menu:
         df_otros = df_comp[df_comp['Integrante'] != op_edit] if not df_comp.empty else pd.DataFrame(columns=COLUMNAS_COMPETENCIAS)
         df_nueva = pd.concat([df_otros, pd.DataFrame(filas_no, columns=COLUMNAS_COMPETENCIAS)], ignore_index=True)
         st.session_state.competencias = df_nueva
-        if guardar_df("Competencias", df_nueva):
+        ok, err = guardar_df("Competencias", df_nueva)
+        if ok:
             st.success(f"✅ Competencias de {op_edit} actualizadas.")
         else:
             st.error("No se pudo guardar. Verificá que exista la hoja 'Competencias' en el Google Sheet "
                      "con columnas: Integrante, Tarea, Subtarea, Sabe.")
+            mostrar_error_tecnico(err)
         time.sleep(1.2); st.rerun()
 
-# ===== 23. MANUAL =====
+# ===== 25. MANUAL =====
 elif "Manual" in menu:
     st.title("📚 Manual de Uso — CRM Capacidad Instalada")
-    st.markdown("**Versión 4.0** | Con Vista Diaria del Equipo, Matriz de Competencias y Panel en pestañas.")
+    st.markdown("**Versión 5.0** | Con autenticación, guardado seguro, proyección de capacidad y edición de cargas.")
     st.divider()
 
     with st.expander("🎯 1. ¿Qué es el CRM?", expanded=False):
         st.markdown("""
-El CRM registra y analiza cómo se distribuye el tiempo del equipo, con **subtareas** para mayor detalle
-y una **Vista Diaria** para saber, día por día, quién está saturado y quién puede ayudar.
-
-**Para qué sirve:**
-- Ver si alguien está saturado 🔴 o tiene capacidad 🟢, un día puntual o en el mes
-- Saber quién puede ayudar a quién, cruzando disponibilidad **y** si sabe hacer esa tarea
-- Detectar qué subtarea específica está consumiendo más horas
-- Generar reportes PDF detallados por tarea, subtarea y equipo
+El CRM registra y analiza cómo se distribuye el tiempo del equipo: subtareas, Vista Diaria, matriz de
+competencias y ahora también una **Proyección de Capacidad** para saber si conviene contratar.
         """)
 
-    with st.expander("🏷️ 2. Tareas y Subtareas", expanded=False):
+    with st.expander("🔐 2. Acceso y contraseñas", expanded=False):
         st.markdown("""
-| Tarea | Subtareas disponibles |
-|-------|----------------------|
-| **IMPUESTOS** | Anual / Mensual |
-| **SUELDOS** | Liquidación / Cargas Sociales y Sindicato / SAC |
-| **CONTABILIDAD** | Rutinaria / Cierre y Balances |
-| **DOCUMENTACIÓN CARGA** | Monotributo / Responsable Inscripto / Sociedades |
-| **DOCUMENTACIÓN CONTROL** | Sin subtareas |
-| **ATENCIÓN AL CLIENTE** | Sin subtareas |
-| **TAREAS NO RUTINARIAS** | Sin subtareas |
-| **DISPONIBLE** | Sin subtareas |
-| **REUNIONES DE EQUIPO** | Sin subtareas |
-| **INASISTENCIA** | Sin subtareas |
-| **PLANIFICACIONES** | Sin subtareas |
+Cada usuario (incluido Admin) necesita una contraseña, configurada por quien administra la app en
+`Secrets` (`st.secrets`), bajo la sección `[passwords]`. Sin eso configurado, nadie puede entrar.
         """)
 
     with st.expander("🧩 3. Matriz de Competencias", expanded=False):
         st.markdown("""
-Por defecto se asume que **todos saben hacer todas las tareas**. Solo hay que marcar las excepciones
-(ej: "Maximiliano no sabe Sueldos — Liquidación") en el menú **🧩 Competencias** (solo Admin).
-
-Esto se usa automáticamente en la **Vista Diaria del Equipo**: cuando alguien está saturado, el sistema
-solo sugiere como reemplazo a quien tenga margen horario **y** sepa hacer esa tarea puntual.
+Por defecto se asume que todos saben hacer todas las tareas. Solo hay que marcar las excepciones
+(ej: "Maximiliano no sabe Sueldos — Liquidación") en **🧩 Competencias** (solo Admin). Esto se usa
+automáticamente en la Vista Diaria para sugerir reemplazos reales.
         """)
 
     with st.expander("📅 4. Vista Diaria del Equipo", expanded=False):
         st.markdown("""
 En **📊 Panel de Control → 🟢 Resumen**, elegí una fecha puntual y vas a ver el estado de las 4 personas
-ese día (saturado / ajustado / con margen), qué tareas hicieron, y si alguien está saturado, quién puede
-darle una mano (según disponibilidad y competencia).
+ese día, y si alguien está saturado, quién puede ayudar (según disponibilidad y competencia).
         """)
 
-    with st.expander("✍️ 5. Cómo Cargar Horas con Subtarea", expanded=False):
+    with st.expander("📈 5. Proyección de Capacidad", expanded=False):
         st.markdown("""
-1. Ir a **➕ Cargar Mis Horas**
-2. Seleccionar **Fecha**
-3. Seleccionar **Tarea** (ej: IMPUESTOS)
-4. Si la tarea tiene subtareas, aparece el selector → elegir (ej: Mensual)
-5. Ingresar **Horas**
-6. Agregar **Nota** opcional
-7. Hacer clic en **Guardar**
-
-Si con esa carga superás las 6 hs del día (sumando todo lo ya cargado), el sistema te avisa.
+En **📊 Panel de Control → 📈 Proyección** (solo Admin), se compara la demanda real de horas del equipo
+contra la capacidad neta total, mes a mes, y se proyecta la tendencia a 3 meses. Sirve como base numérica
+para decidir si conviene sumar personal.
         """)
 
-# ===== 24. PROTOCOLO =====
+    with st.expander("✍️ 6. Cargar, editar y eliminar horas", expanded=False):
+        st.markdown("""
+1. Ir a **➕ Cargar Mis Horas**, completar Fecha/Tarea/Subtarea/Horas/Nota y **Guardar**.
+2. En el historial de abajo, cada carga tiene botones **Editar** y **Eliminar**.
+3. Si con una carga superás las 6 hs del día (sumando todo lo ya cargado), el sistema avisa pero
+   permite guardar igual, por si corresponde a una excepción real.
+        """)
+
+    with st.expander("🗓️ 7. Feriados", expanded=False):
+        st.markdown(f"""
+La app carga feriados de varios archivos `feriados_AAAA.csv` (actualmente: {', '.join(str(a) for a in ANIOS_FERIADOS_A_CARGAR)}).
+Cuando empiece un año nuevo que no esté en la lista, hay que subir el `feriados_AAAA.csv` correspondiente
+y agregar el año a `ANIOS_FERIADOS_A_CARGAR` en el código.
+        """)
+
+# ===== 26. PROTOCOLO =====
 elif "Protocolo" in menu:
     st.title("📜 Protocolo de Uso")
     if st.button("📥 Descargar Guía"):
@@ -891,13 +1078,23 @@ elif "Protocolo" in menu:
             generar_pdf_base("PROTOCOLO CRM", "Manual de Procedimientos", [], es_protocolo=True),
             "Protocolo_Pressacco.pdf")
 
-# ===== 25. RESET =====
+# ===== 27. RESET (con backup obligatorio previo) =====
 elif "Reset" in menu:
     st.title("⚙️ Resetear Base")
-    st.warning("⚠️ Esto borra TODOS los datos cargados. Asegurate de tener los PDFs descargados antes.")
+    st.warning("⚠️ Esto borra TODOS los datos cargados. Descargá el backup antes de continuar.")
+
+    csv_backup = st.session_state.cargas.to_csv(index=False).encode('utf-8')
+    st.download_button("📥 Descargar backup CSV antes de borrar", csv_backup,
+                        f"backup_cargas_{hoy.strftime('%Y%m%d_%H%M')}.csv", "text/csv")
+
+    st.divider()
     if st.text_input("Escriba BORRAR") == "BORRAR":
         if st.button("Limpiar Todo"):
-            guardar_df("Cargas", pd.DataFrame(columns=COLUMNAS_BASE))
-            st.session_state.cargas = pd.DataFrame(columns=COLUMNAS_BASE)
-            st.success("✅ Base reseteada. Podés empezar desde Junio 2026.")
-            st.rerun()
+            ok, err = guardar_df("Cargas", pd.DataFrame(columns=COLUMNAS_BASE))
+            if ok:
+                st.session_state.cargas = pd.DataFrame(columns=COLUMNAS_BASE)
+                st.success("✅ Base reseteada.")
+                st.rerun()
+            else:
+                st.error("No se pudo resetear la base en Google Sheets.")
+                mostrar_error_tecnico(err)
