@@ -590,7 +590,7 @@ if "Panel de Control" in menu:
 
         st.subheader("📅 Vista Diaria del Equipo")
         st.caption("Elegí un día puntual para ver quién estaba saturado y quién podía dar una mano.")
-        fecha_vista = st.date_input("Día a analizar", value=hoy.date(), key="fecha_vista_diaria")
+        fecha_vista = st.date_input("Día a analizar", value=hoy.date(), key="fecha_vista_diaria", format="DD/MM/YYYY")
         df_foto = foto_dia(df_p, fecha_vista)
 
         for _, row in df_foto.iterrows():
@@ -830,7 +830,7 @@ elif "Carga Masiva" in menu:
     with st.form("fm"):
         u_m = st.selectbox("Persona", OPERARIOS_FIJOS)
         st.write(f"**Tarea:** {t_m}" + (f" — {st_m}" if st_m else ""))
-        f_i = st.date_input("Desde"); f_f = st.date_input("Hasta")
+        f_i = st.date_input("Desde", format="DD/MM/YYYY"); f_f = st.date_input("Hasta", format="DD/MM/YYYY")
         h_t = st.number_input("Horas Totales", min_value=0.0, max_value=float(HORAS_MAX_DIA) * 60)
         if st.form_submit_button("Ejecutar"):
             rgo = pd.bdate_range(start=f_i, end=f_f, freq='C', holidays=FERIADOS)
@@ -872,7 +872,7 @@ elif "Cargar" in menu:
         st.caption("Esta tarea no tiene subtareas.")
 
     with st.form("fi"):
-        f_fecha = st.date_input("Fecha", value=datetime.now())
+        f_fecha = st.date_input("Fecha", value=datetime.now(), format="DD/MM/YYYY")
         st.write(f"**Tarea seleccionada:** {f_t}" + (f" — {f_sub}" if f_sub != "—" else ""))
         f_h = st.number_input("Horas", step=0.5, value=6.0, min_value=0.5, max_value=float(HORAS_MAX_DIA))
         f_n = st.text_input("Nota")
@@ -940,7 +940,7 @@ elif "Cargar" in menu:
         st.divider()
         st.markdown("### ✏️ Editando carga")
         with st.form("form_editar"):
-            e_fecha = st.date_input("Fecha", value=pd.to_datetime(row['Fecha']).date())
+            e_fecha = st.date_input("Fecha", value=pd.to_datetime(row['Fecha']).date(), format="DD/MM/YYYY")
             lista_tareas = list(COLORES_TAREAS.keys())
             e_tarea = st.selectbox("Tarea", lista_tareas, index=lista_tareas.index(row['Tarea']) if row['Tarea'] in lista_tareas else 0)
             subs_e = SUBTAREAS.get(e_tarea, [])
