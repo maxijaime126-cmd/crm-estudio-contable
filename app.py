@@ -955,7 +955,7 @@ elif "Cargar" in menu:
             cancelar_edit = cg2.form_submit_button("Cancelar")
 
             if guardar_edit:
-                st.session_state.cargas.loc[idx, 'Fecha'] = e_fecha
+                st.session_state.cargas.loc[idx, 'Fecha'] = pd.Timestamp(e_fecha)
                 st.session_state.cargas.loc[idx, 'Tarea'] = e_tarea
                 st.session_state.cargas.loc[idx, 'Subtarea'] = e_sub
                 st.session_state.cargas.loc[idx, u_c] = e_horas
