@@ -222,6 +222,8 @@ def tiene_competencia(df_comp, integrante, tarea, subtarea):
 
 # ===== 11. VISTA DIARIA DEL EQUIPO Y SATURACIÓN =====
 def horas_cargadas_dia(df, integrante, fecha, excluir_index=None):
+    """Total BRUTO cargado ese día (incluye Disponible/Planificaciones). Usar solo
+    cuando se necesita el total real de horas registradas, no para medir saturación."""
     if df.empty or integrante not in df.columns:
         return 0.0
     df_dia = df[df['Fecha'].dt.date == fecha]
@@ -229,15 +231,27 @@ def horas_cargadas_dia(df, integrante, fecha, excluir_index=None):
         df_dia = df_dia.drop(excluir_index)
     return round(df_dia[integrante].sum(), 1)
 
+def horas_trabajo_dia(df, integrante, fecha, excluir_index=None):
+    """Horas de TRABAJO real ese día: el total cargado MENOS lo que esté en
+    Disponible/Planificaciones, porque esas horas representan margen libre, no
+    carga de trabajo. Esta es la que hay que usar para medir saturación."""
+    if df.empty or integrante not in df.columns:
+        return 0.0
+    df_dia = df[df['Fecha'].dt.date == fecha]
+    if excluir_index is not None and excluir_index in df_dia.index:
+        df_dia = df_dia.drop(excluir_index)
+    df_trabajo = df_dia[~df_dia['Tarea'].isin(TAREAS_DISPONIBILIDAD)]
+    return round(df_trabajo[integrante].sum(), 1)
+
 def dias_saturados_mes(df, operario, anio, mes, feriados):
-    """Cuenta cuántos días hábiles del mes esa persona llegó/superó las 6hs."""
+    """Cuenta cuántos días hábiles del mes esa persona llegó/superó las 6hs de TRABAJO real."""
     ini, fin = get_rango_mes(anio, mes)
     dias_lab = pd.bdate_range(start=ini, end=fin, freq='C', holidays=feriados)
     if df.empty:
         return 0, len(dias_lab)
     count_sat = 0
     for d in dias_lab:
-        if horas_cargadas_dia(df, operario, d.date()) >= HORAS_DIA_LABORAL:
+        if horas_trabajo_dia(df, operario, d.date()) >= HORAS_DIA_LABORAL:
             count_sat += 1
     return count_sat, len(dias_lab)
 
@@ -246,25 +260,27 @@ def foto_dia(df, fecha):
     rows = []
     for op in OPERARIOS_FIJOS:
         df_op = df_dia[df_dia[op] > 0]
-        total = round(df_op[op].sum(), 1)
-        margen = round(HORAS_DIA_LABORAL - total, 1)
+        total_bruto = round(df_op[op].sum(), 1)
+        h_disp_dia = round(df_op[df_op['Tarea'].isin(TAREAS_DISPONIBILIDAD)][op].sum(), 1)
+        horas_trabajo = round(total_bruto - h_disp_dia, 1)
+        margen = round(HORAS_DIA_LABORAL - horas_trabajo, 1)
         tareas_dia = df_op.apply(lambda r: etiqueta_tarea(r['Tarea'], r.get('Subtarea', '')), axis=1).tolist()
         estado, css_class = semaforo_dia(margen)
         rows.append({
-            'Integrante': op, 'Horas Cargadas': total, 'Margen (hs)': max(margen, 0),
+            'Integrante': op, 'Horas Trabajadas': horas_trabajo, 'Disponible/Planif. (hs)': h_disp_dia,
+            'Margen (hs)': max(margen, 0),
             'Tareas del día': ", ".join(tareas_dia) if tareas_dia else "Sin carga registrada",
             'Estado': estado, '_css': css_class
         })
     return pd.DataFrame(rows)
 
 def sugerir_ayuda(df, fecha, tarea_objetivo, subtarea_objetivo, df_comp, excluir=None):
-    df_dia = df[df['Fecha'].dt.date == fecha]
     candidatos = []
     for op in OPERARIOS_FIJOS:
         if op == excluir:
             continue
-        total = df_dia[op].sum() if not df_dia.empty else 0
-        margen = round(HORAS_DIA_LABORAL - total, 1)
+        trabajo = horas_trabajo_dia(df, op, fecha)
+        margen = round(HORAS_DIA_LABORAL - trabajo, 1)
         sabe = tiene_competencia(df_comp, op, tarea_objetivo, subtarea_objetivo)
         if margen > 0 and sabe:
             candidatos.append({'Integrante': op, 'Margen ese día (hs)': margen})
@@ -384,7 +400,7 @@ def heatmap_calendario_mes(df, anio, mes, feriados):
     dias_lab = pd.bdate_range(start=ini, end=fin, freq='C', holidays=feriados)
     z, etiquetas_dias = [], []
     for d in dias_lab:
-        fila = [horas_cargadas_dia(df, op, d.date()) for op in OPERARIOS_FIJOS]
+        fila = [horas_trabajo_dia(df, op, d.date()) for op in OPERARIOS_FIJOS]
         z.append(fila)
         etiquetas_dias.append(d.strftime('%d/%m'))
     if not z:
@@ -596,7 +612,8 @@ if "Panel de Control" in menu:
         for _, row in df_foto.iterrows():
             st.markdown(
                 f'<div class="dia-card {row["_css"]}"><b>{row["Integrante"]}</b> — {row["Estado"]} '
-                f'| Cargado: {row["Horas Cargadas"]} hs | Margen: {row["Margen (hs)"]} hs<br>'
+                f'| Trabajado: {row["Horas Trabajadas"]} hs | Disponible/Planif.: {row["Disponible/Planif. (hs)"]} hs '
+                f'| Margen: {row["Margen (hs)"]} hs<br>'
                 f'<small>{row["Tareas del día"]}</small></div>',
                 unsafe_allow_html=True
             )
@@ -840,9 +857,10 @@ elif "Carga Masiva" in menu:
                 df_check['Fecha'] = pd.to_datetime(df_check['Fecha'], errors='coerce')
                 dias_saturados = []
                 filas = []
+                aporte_trabajo = h_d if t_m not in TAREAS_DISPONIBILIDAD else 0
                 for d in rgo:
-                    ya_cargado = horas_cargadas_dia(df_check, u_m, d.date())
-                    if ya_cargado + h_d > HORAS_DIA_LABORAL:
+                    ya_trabajo = horas_trabajo_dia(df_check, u_m, d.date())
+                    if ya_trabajo + aporte_trabajo > HORAS_DIA_LABORAL:
                         dias_saturados.append(d.strftime('%d/%m'))
                     fila = {'Fecha': d, 'Tarea': t_m, 'Subtarea': st_m if st_m else '—', 'Nota': 'Masiva'}
                     for o in OPERARIOS_FIJOS: fila[o] = h_d if o == u_m else 0
@@ -892,10 +910,11 @@ elif "Cargar" in menu:
             if not duplicado.empty:
                 st.warning(f"⚠️ Ya existe una carga para {u_c} el {f_fecha.strftime('%d/%m/%Y')} en '{f_t} — {f_sub}'. Usá 'Editar' en el historial si querés cambiarla.")
             else:
-                ya_cargado_hoy = horas_cargadas_dia(df_check, u_c, f_fecha)
-                total_dia = round(ya_cargado_hoy + f_h, 1)
-                if total_dia > HORAS_DIA_LABORAL:
-                    st.warning(f"⚠️ {u_c} va a quedar con {total_dia} hs cargadas el {f_fecha.strftime('%d/%m/%Y')} "
+                ya_trabajo_hoy = horas_trabajo_dia(df_check, u_c, f_fecha)
+                aporte_trabajo = f_h if f_t not in TAREAS_DISPONIBILIDAD else 0
+                total_trabajo_dia = round(ya_trabajo_hoy + aporte_trabajo, 1)
+                if total_trabajo_dia > HORAS_DIA_LABORAL:
+                    st.warning(f"⚠️ {u_c} va a quedar con {total_trabajo_dia} hs de TRABAJO el {f_fecha.strftime('%d/%m/%Y')} "
                                f"(máximo habitual: {HORAS_DIA_LABORAL} hs). Se guarda igual, revisá si corresponde.")
 
                 nueva = {'Fecha': f_fecha, 'Tarea': f_t, 'Subtarea': f_sub, 'Nota': f_n}
