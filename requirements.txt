@@ -3,4 +3,4 @@ pandas
 plotly
 gspread
 google-auth
-reportlab
+tzdata
