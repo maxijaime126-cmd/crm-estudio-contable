@@ -51,6 +51,10 @@ def filas_semilla(hoja: str) -> list[dict]:
     return []
 
 
+def _canon(t) -> str:
+    return str(t).strip().lower()
+
+
 def _a_texto(v) -> str:
     return "" if v is None else str(v)
 
@@ -122,25 +126,47 @@ class SheetsStore:
             ws.resize(cols=len(header))
         ws.update(range_name="A1", values=[header])   # por defecto se guarda como texto (RAW)
 
+    def _buscar_hojas(self) -> dict:
+        # Google no distingue mayúsculas en los nombres de pestañas: comparamos igual.
+        return {_canon(w.title): w for w in self.ss.worksheets()}
+
     def bootstrap(self):
-        """Crea hojas y columnas que falten. No borra ni reordena nada existente."""
-        existentes = {w.title: w for w in self.ss.worksheets()}
+        """Crea hojas y columnas que falten. No borra ni reordena nada existente.
+        Es seguro correrlo muchas veces y tolera pestañas con otras mayúsculas, un arranque
+        anterior que quedó a medias, o dos sesiones arrancando al mismo tiempo."""
+        existentes = self._buscar_hojas()
         for hoja, cols in C.ESQUEMA.items():
-            ws = existentes.get(hoja)
+            ws = existentes.get(_canon(hoja))
             if ws is None:
-                ws = self.ss.add_worksheet(title=hoja, rows=2000, cols=max(len(cols), 6))
-                self._escribir_encabezado(ws, list(cols))
-            else:
-                header = [h for h in ws.row_values(1)]
-                faltan = [c for c in cols if c not in header]
-                if not header:
-                    self._escribir_encabezado(ws, list(cols))
-                elif faltan:
-                    self._escribir_encabezado(ws, header + faltan)
+                try:
+                    ws = self.ss.add_worksheet(title=hoja, rows=2000, cols=max(len(cols), 6))
+                except Exception as e:  # noqa: BLE001
+                    if "already exists" not in str(e):
+                        raise
+                    existentes = self._buscar_hojas()   # otra sesión la creó justo antes
+                    ws = existentes[_canon(hoja)]
+                existentes[_canon(hoja)] = ws
+            self._normalizar_encabezado(ws, cols)
             self._ws_cache[hoja] = ws
             self._header_cache.pop(hoja, None)
             if hoja in C.SEMBRAR_SI_VACIA and len(ws.col_values(1)) <= 1:
                 self.agregar(hoja, filas_semilla(hoja))
+
+    def _normalizar_encabezado(self, ws, cols):
+        """Deja los nombres de columnas como los espera la app (aunque estén en minúscula) y
+        agrega los que falten al final. Nunca borra columnas ni cambia el orden."""
+        header = list(ws.row_values(1))
+        nuevo, cambio = list(header), False
+        for c in cols:
+            idx = next((i for i, h in enumerate(nuevo) if _canon(h) == _canon(c)), None)
+            if idx is None:
+                nuevo.append(c)
+                cambio = True
+            elif nuevo[idx] != c:
+                nuevo[idx] = c
+                cambio = True
+        if cambio:
+            self._escribir_encabezado(ws, nuevo)
 
     # ---- lectura ----
     def leer(self, hoja: str) -> pd.DataFrame:
