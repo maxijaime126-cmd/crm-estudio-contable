@@ -197,6 +197,58 @@ def pantalla_login(personas: pd.DataFrame):
 # ============================================================================
 # Cargar horas
 # ============================================================================
+DURACIONES = {"10 min": 10, "15 min": 15, "30 min": 30, "45 min": 45, "1 h": 60,
+              "1 h 30": 90, "2 h": 120, "3 h": 180, "4 h": 240}
+
+
+def selector_tarea(cat: pd.DataFrame, clave: str, actual: dict | None = None,
+                   etiqueta_modo: str = "¿Qué vas a cargar?"):
+    """Trabajo > Departamento > Tarea > Subtarea, o Disponible / Ausencia directo.
+    'clave' evita choques entre pantallas; 'actual' (opcional) marca lo que viene seleccionado."""
+    actual = actual or {}
+    modos = ["💼 Trabajo", "🟦 Disponible", "🏖️ Ausencia"]
+    i_modo = 2 if actual.get("Tarea") == C.TAREA_AUSENCIAS else 1 if actual.get("Tarea") == C.TAREA_DISPONIBLE else 0
+    modo = st.radio(etiqueta_modo, modos, index=i_modo, horizontal=True, key=f"{clave}_modo")
+    if modo.startswith("💼"):
+        # Disponible y Ausencias tienen su propia opción: acá van las tareas de cada departamento
+        cat_t = cat[~cat["Tarea"].isin([C.TAREA_DISPONIBLE, C.TAREA_AUSENCIAS])]
+        if cat_t.empty:
+            st.error("El catálogo no tiene tareas de trabajo. Revisá la hoja Catalogo.")
+            return None
+        deptos = list(dict.fromkeys(cat_t["Departamento"]))
+        i_dep = deptos.index(actual["Departamento"]) if actual.get("Departamento") in deptos else 0
+        depto = st.selectbox("Departamento", deptos, index=i_dep, format_func=etiqueta_depto, key=f"{clave}_dep")
+        sub_d = cat_t[cat_t["Departamento"] == depto]
+        tareas = list(dict.fromkeys(sub_d["Tarea"]))
+        mismo_dep = actual.get("Departamento") == depto
+        i_tar = tareas.index(actual["Tarea"]) if mismo_dep and actual.get("Tarea") in tareas else 0
+        c2, c3 = st.columns(2)
+        tarea = c2.selectbox("Tarea", tareas, index=i_tar, key=f"{clave}_tar_{depto}")
+        subs = [x for x in sub_d[sub_d["Tarea"] == tarea]["Subtarea"] if x]
+        if subs:
+            misma = mismo_dep and actual.get("Tarea") == tarea
+            i_sub = subs.index(actual["Subtarea"]) if misma and actual.get("Subtarea") in subs else 0
+            subtarea = c3.selectbox("Subtarea", subs, index=i_sub, key=f"{clave}_sub_{depto}_{tarea}")
+        else:
+            subtarea = ""
+            c3.caption("Esta tarea no tiene subtareas.")
+        fila_cat = sub_d[(sub_d["Tarea"] == tarea) & (sub_d["Subtarea"] == subtarea)]
+        tipo = fila_cat["Tipo"].iloc[0] if not fila_cat.empty else C.TIPO_TRABAJO
+        ruta = f"<b>{html.escape(depto)}</b> › {html.escape(tarea)}" + (f" › {html.escape(subtarea)}" if subtarea else "")
+        return {"depto": depto, "tarea": tarea, "subtarea": subtarea, "tipo": tipo,
+                "color": C.COLORES_DEPTO.get(depto, "#0077B6"), "icono": C.ICONOS_DEPTO.get(depto, "📁"), "ruta": ruta}
+    if modo.startswith("🟦"):
+        st.caption("Para cuando no estás haciendo nada: completa tus horas del día. No hace falta elegir departamento.")
+        return {"depto": C.DEPTO_GENERAL, "tarea": C.TAREA_DISPONIBLE, "subtarea": "", "tipo": C.TIPO_DISPONIBLE,
+                "color": "#0096C7", "icono": "🟦", "ruta": "<b>Disponible</b>"}
+    opciones = list(dict.fromkeys(x for x in cat[cat["Tarea"] == C.TAREA_AUSENCIAS]["Subtarea"] if x)) \
+        or ["Inasistencia (día personal)", "Vacaciones"]
+    i_aus = opciones.index(actual["Subtarea"]) if actual.get("Subtarea") in opciones else 0
+    subtarea = st.selectbox("Tipo de ausencia", opciones, index=i_aus, key=f"{clave}_aus")
+    return {"depto": C.DEPTO_GENERAL, "tarea": C.TAREA_AUSENCIAS, "subtarea": subtarea, "tipo": C.TIPO_AUSENCIA,
+            "color": "#6B7C8C", "icono": "🏖️", "ruta": f"<b>Ausencia</b> › {html.escape(subtarea)}"}
+
+
 def banner_objetivo(reg, persona, hd, feriados, hoy):
     objetivo, cargadas = calc.objetivo_mes(reg, persona, hoy.year, hoy.month, hd, feriados)
     faltan = max(0.0, objetivo - cargadas)
@@ -222,44 +274,15 @@ def pantalla_carga(ctx: dict, usuario: str, es_admin: bool):
     banner_objetivo(reg, persona, hd, feriados, hoy)
 
     # --- Qué se carga ---
-    modo_carga = st.radio("¿Qué vas a cargar?", ["💼 Trabajo", "🟦 Disponible", "🏖️ Ausencia"],
-                          horizontal=True, key="c_modo")
-    if modo_carga.startswith("💼"):
-        # Disponible y Ausencias tienen su propia opción: acá van las tareas de cada departamento
-        cat_t = cat[~cat["Tarea"].isin([C.TAREA_DISPONIBLE, C.TAREA_AUSENCIAS])]
-        if cat_t.empty:
-            st.error("El catálogo no tiene tareas de trabajo. Revisá la hoja Catalogo.")
-            return
-        deptos = list(dict.fromkeys(cat_t["Departamento"]))
-        depto = st.selectbox("Departamento", deptos, format_func=etiqueta_depto, key="c_dep")
-        sub_d = cat_t[cat_t["Departamento"] == depto]
-        c2, c3 = st.columns(2)
-        tarea = c2.selectbox("Tarea", list(dict.fromkeys(sub_d["Tarea"])), key=f"c_tar_{depto}")
-        subs = [x for x in sub_d[sub_d["Tarea"] == tarea]["Subtarea"] if x]
-        if subs:
-            subtarea = c3.selectbox("Subtarea", subs, key=f"c_sub_{depto}_{tarea}")
-        else:
-            subtarea = ""
-            c3.caption("Esta tarea no tiene subtareas.")
-        fila_cat = sub_d[(sub_d["Tarea"] == tarea) & (sub_d["Subtarea"] == subtarea)]
-        tipo = fila_cat["Tipo"].iloc[0] if not fila_cat.empty else C.TIPO_TRABAJO
-        color, icono = C.COLORES_DEPTO.get(depto, "#0077B6"), C.ICONOS_DEPTO.get(depto, "📁")
-        ruta = f"<b>{html.escape(depto)}</b> › {html.escape(tarea)}" + (f" › {html.escape(subtarea)}" if subtarea else "")
-    elif modo_carga.startswith("🟦"):
-        depto, tarea, subtarea, tipo = C.DEPTO_GENERAL, C.TAREA_DISPONIBLE, "", C.TIPO_DISPONIBLE
-        color, icono, ruta = "#0096C7", "🟦", "<b>Disponible</b>"
-        st.caption("Para cuando no estás haciendo nada: completa tus horas del día. No hace falta elegir departamento.")
-    else:
-        opciones = list(dict.fromkeys(x for x in cat[cat["Tarea"] == C.TAREA_AUSENCIAS]["Subtarea"] if x)) \
-            or ["Inasistencia (día personal)", "Vacaciones"]
-        depto, tarea, tipo = C.DEPTO_GENERAL, C.TAREA_AUSENCIAS, C.TIPO_AUSENCIA
-        subtarea = st.selectbox("Tipo de ausencia", opciones, key="c_aus")
-        color, icono, ruta = "#6B7C8C", "🏖️", f"<b>Ausencia</b> › {html.escape(subtarea)}"
+    sel = selector_tarea(cat, "c")
+    if sel is None:
+        return
+    depto, tarea, subtarea, tipo = sel["depto"], sel["tarea"], sel["subtarea"], sel["tipo"]
     es_ausencia = tipo == C.TIPO_AUSENCIA
-
+    color = sel["color"]
     st.markdown(
         f'<div class="dep-card" style="border-left:8px solid {color}; background:{color}22;">'
-        f'{icono} {ruta}<span class="chip {CHIP_TIPO.get(tipo, "chip-trab")}">'
+        f'{sel["icono"]} {sel["ruta"]}<span class="chip {CHIP_TIPO.get(tipo, "chip-trab")}">'
         f'{html.escape(tipo)}</span></div>', unsafe_allow_html=True)
 
     # --- Cuándo y cuánto ---
@@ -280,8 +303,12 @@ def pantalla_carga(ctx: dict, usuario: str, es_admin: bool):
         modalidad = st.radio("¿Cuándo?", ["Un día", "Repartir en varios días"], horizontal=True)
         if modalidad == "Un día":
             desde = hasta = st.date_input("Fecha", value=hoy, max_value=hoy, format="DD/MM/YYYY", key="t_fecha")
-            minutos = st.number_input("Minutos", min_value=C.MIN_MINUTOS, max_value=C.MAX_MINUTOS_CARGA,
-                                      step=C.PASO_MINUTOS, value=60, key=f"t_min_{ver}")
+            dur = st.radio("Duración", list(DURACIONES) + ["Otra"], index=4, horizontal=True, key=f"t_dur_{ver}")
+            if dur == "Otra":
+                minutos = st.number_input("Minutos", min_value=C.MIN_MINUTOS, max_value=C.MAX_MINUTOS_CARGA,
+                                          step=C.PASO_MINUTOS, value=60, key=f"t_min_{ver}")
+            else:
+                minutos = DURACIONES[dur]
             modo = "por_dia"
         else:
             d1, d2 = st.columns(2)
@@ -334,7 +361,7 @@ def pantalla_carga(ctx: dict, usuario: str, es_admin: bool):
             else:
                 st.error(f"No se pudo guardar: {error}")
 
-    seccion_mis_cargas(reg, persona, hoy, hd, feriados, desde)
+    seccion_mis_cargas(reg, persona, hoy, hd, feriados, desde, cat)
 
 
 def resumen_dia(reg, persona, dia, hd, feriados, nuevas_hs, tipo):
@@ -377,7 +404,8 @@ def tabla_cargas(df: pd.DataFrame, con_fecha: bool) -> pd.DataFrame:
     return pd.concat([v, pd.DataFrame([fila])], ignore_index=True)
 
 
-def seccion_mis_cargas(reg: pd.DataFrame, persona: str, hoy: date, hd: float, feriados: set, dia_ref: date):
+def seccion_mis_cargas(reg: pd.DataFrame, persona: str, hoy: date, hd: float, feriados: set, dia_ref: date,
+                       cat: pd.DataFrame):
     st.divider()
     seccion("🗂️ Mis cargas")
     propias = reg[reg["Persona"] == persona]
@@ -417,10 +445,10 @@ def seccion_mis_cargas(reg: pd.DataFrame, persona: str, hoy: date, hd: float, fe
             st.dataframe(resumen, hide_index=True)
         with st.expander("Ver todas las cargas del mes"):
             st.dataframe(tabla_cargas(mostradas, True), hide_index=True)
-    editar_eliminar(mostradas)
+    editar_eliminar(mostradas, cat)
 
 
-def editar_eliminar(mostradas: pd.DataFrame):
+def editar_eliminar(mostradas: pd.DataFrame, cat: pd.DataFrame):
     editables = mostradas[mostradas["ID"] != ""]
     if editables.empty:
         return
@@ -430,22 +458,36 @@ def editar_eliminar(mostradas: pd.DataFrame):
                      for r in editables.itertuples()}
         elegido = st.selectbox("Carga", list(etiquetas), format_func=lambda i: etiquetas[i])
         fila = editables[editables["ID"] == elegido].iloc[0]
+
+        fecha_nueva = st.date_input("Fecha", value=fila["Fecha"].date(), format="DD/MM/YYYY",
+                                    key=f"e_fecha_{elegido}")
         valor = max(C.PASO_MINUTOS, min(int(fila["Minutos"]), C.MAX_MINUTOS_CARGA))
         nuevos = st.number_input("Minutos", min_value=C.PASO_MINUTOS, max_value=C.MAX_MINUTOS_CARGA,
                                  step=C.PASO_MINUTOS, value=valor, key=f"e_min_{elegido}")
         st.caption(f"= {fmt_min(nuevos)}")
         nueva_nota = st.text_input("Nota", value=fila["Nota"], key=f"e_nota_{elegido}")
+        sel = None
+        if st.checkbox("Cambiar departamento / tarea / subtarea", key=f"e_cambiar_{elegido}"):
+            sel = selector_tarea(cat, f"e{elegido}", {"Departamento": fila["Departamento"], "Tarea": fila["Tarea"],
+                                                       "Subtarea": fila["Subtarea"]},
+                                 etiqueta_modo="¿Qué tipo de carga es?")
         b1, b2 = st.columns(2)
         if b1.button("Guardar cambios", key=f"e_ok_{elegido}"):
-            try:
-                get_store().actualizar_por_id(C.HOJA_REGISTROS, elegido,
-                                              {"Minutos": int(nuevos), "Nota": nueva_nota.strip()})
-                invalidar()
-                st.session_state["msg_ok"] = "✅ Carga actualizada."
-            except Exception as e:  # noqa: BLE001
-                st.error(f"No se pudo actualizar: {e}")
+            subtarea_final = sel["subtarea"] if sel else fila["Subtarea"]
+            if subtarea_final == C.SUBTAREA_NOTA_OBLIGATORIA and not nueva_nota.strip():
+                st.error("Para «Otros imprevistos» la nota es obligatoria.")
             else:
-                st.rerun()
+                cambios = {"Fecha": fecha_nueva.isoformat(), "Minutos": int(nuevos), "Nota": nueva_nota.strip()}
+                if sel:
+                    cambios.update({"Departamento": sel["depto"], "Tarea": sel["tarea"], "Subtarea": sel["subtarea"]})
+                try:
+                    get_store().actualizar_por_id(C.HOJA_REGISTROS, elegido, cambios)
+                    invalidar()
+                    st.session_state["msg_ok"] = "✅ Carga actualizada."
+                except Exception as e:  # noqa: BLE001
+                    st.error(f"No se pudo actualizar: {e}")
+                else:
+                    st.rerun()
         confirmar = b2.checkbox("Confirmo que quiero eliminarla", key=f"e_conf_{elegido}")
         if b2.button("🗑️ Eliminar", disabled=not confirmar, key=f"e_del_{elegido}"):
             try:
@@ -461,10 +503,32 @@ def editar_eliminar(mostradas: pd.DataFrame):
 # ============================================================================
 # Panel de control
 # ============================================================================
+def bloque_estado_dia(ctx: dict, hoy: date):
+    """Para el Admin: ¿quién completó las horas del día?"""
+    horas_pp = calc.horas_por_persona(ctx["personas"])
+    if not horas_pp:
+        return
+    seccion("🕒 ¿Quién completó el día?")
+    dia = st.date_input("Día a revisar", value=hoy, max_value=hoy, format="DD/MM/YYYY", key="estado_dia")
+    t = calc.estado_dia(ctx["reg"], dia, horas_pp, ctx["feriados"])
+    if not calc.es_habil(dia, ctx["feriados"]):
+        st.caption("Ese día no es hábil (fin de semana o feriado).")
+    else:
+        completos = int(t["Estado"].str.startswith("✅").sum())
+        st.markdown(f'<div class="obj-box">✅ <b>{completos} de {len(t)}</b> completaron las horas del '
+                    f'{dia:%d/%m/%Y}</div>', unsafe_allow_html=True)
+    st.dataframe(t, hide_index=True)
+    if dia == hoy:
+        st.caption("El protocolo pide cargar las horas antes de las 15 hs: antes de esa hora es normal que falten.")
+
+
 def pantalla_resumen(ctx: dict, usuario: str, es_admin: bool):
     reg = ctx["reg"]
     hoy = hoy_ar()
     st.header("📊 Panel de control")
+    if es_admin:
+        bloque_estado_dia(ctx, hoy)
+        st.divider()
     anios = sorted({hoy.year - 1, hoy.year, hoy.year + 1, *reg["Fecha"].dt.year.astype(int).tolist()})
     f1, f2, _ = st.columns([1.3, 1.6, 2.5])
     anio = f1.selectbox("Año", anios, index=anios.index(hoy.year))
@@ -778,7 +842,7 @@ def pantalla_manual():
         st.markdown("""
 Elegí **Departamento → Tarea → Subtarea**. El departamento es **para qué es el trabajo**, no quién lo hace
 (reclamar facturas va en DOCUMENTACIÓN aunque lo haga Atención al cliente).
-Los minutos van de a 5, con un mínimo de 10. Para repartir un trabajo en varios días usá *Repartir en varios días*.
+La duración se elige con un toque (10 min, 15, 30, 45, 1 h, 1 h 30, 2 h, 3 h, 4 h) o con *Otra* para escribir los minutos exactos (de a 5, mínimo 10). Para repartir un trabajo en varios días usá *Repartir en varios días*.
 """)
     with st.expander("🟦 Disponible, Ausencias y horas extra"):
         st.markdown("""
@@ -801,6 +865,7 @@ Los minutos van de a 5, con un mínimo de 10. Para repartir un trabajo en varios
 - **Calendario:** una fila por departamento y una columna por día, con una fila *Total equipo*. Se puede colorear según la
   capacidad del equipo o según el pico de cada departamento, y ver un calendario de semanas de un departamento.
   El gris significa que nadie cargó horas ese día. Abajo, los días más cargados y quién puede ayudar un día puntual.
+- **Quién completó el día:** arriba del Panel de control, el Admin ve quién cargó las horas del día (por defecto hoy).
 - **Semanal:** cuánto trabajo cae cada semana por departamento y cuántas horas libres tenía el equipo
   (capacidad − trabajo). Sirve para saber si un departamento puede absorber un pico o si conviene sumar gente.
 - **Importante:** estos números solo sirven si todos cargan sus 6 horas todos los días (con *Disponible* cuando
@@ -815,8 +880,8 @@ Se editan directamente en el Google Sheet:
 - **Feriados:** Fecha (AAAA-MM-DD) y Motivo. Hay que agregar los de cada año nuevo.
 """)
     with st.expander("✏️ Me equivoqué en una carga"):
-        st.markdown("En **Cargar horas → Mis cargas → Editar o eliminar una carga** podés cambiar los minutos y la "
-                    "nota, o borrarla. En *Mis cargas* ves lo del día (con el total) o el mes día por día.")
+        st.markdown("En **Cargar horas → Mis cargas → Editar o eliminar una carga** podés cambiar la fecha, los minutos, la "
+                    "nota y, tildando la opción, el departamento, la tarea y la subtarea. También podés borrarla. En *Mis cargas* ves lo del día (con el total) o el mes día por día.")
 
 
 def pantalla_protocolo():
@@ -850,7 +915,7 @@ def main():
 
     with st.sidebar:
         st.markdown(f"### 🏛️ Pressacco\n**{usuario}**")
-        pagina = st.radio("Navegación", ["➕ Cargar horas", "📊 Panel de control", "📚 Manual", "📜 Protocolo"])
+        pagina = st.radio("Navegación", ["📊 Panel de control", "➕ Cargar horas", "📚 Manual", "📜 Protocolo"])
         if st.button("🔄 Actualizar datos"):
             invalidar()
             st.rerun()
