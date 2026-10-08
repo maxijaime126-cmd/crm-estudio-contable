@@ -42,7 +42,7 @@ st.markdown("""
                 margin: 4px 0 16px 0; }
     .kpi-card { border-radius: 14px; padding: 14px 12px; color: #fff; text-align: center;
                 box-shadow: 0 3px 10px rgba(0,0,0,.12); }
-    .kpi-card h2 { font-size: 1.75rem; margin: 0; font-weight: 800; color: #fff; white-space: nowrap; }
+    .kpi-v { font-size: 1.75rem; font-weight: 800; color: #fff; white-space: nowrap; line-height: 1.25; text-align: center; }
     .kpi-card p { font-size: .8rem; margin: 3px 0 0 0; opacity: .95; }
     .k-cap { background: linear-gradient(135deg, #1F4E78, #3A7CA5); }
     .k-trab { background: linear-gradient(135deg, #2D9C6B, #52C48F); }
@@ -104,7 +104,7 @@ def hero(usuario: str, es_admin: bool, hoy: date):
 def kpis(items: list[tuple]):
     """items: (valor, etiqueta, clase). Una sola pieza de HTML que se adapta al ancho."""
     cards = "".join(
-        f'<div class="kpi-card {html.escape(c)}"><h2>{html.escape(str(v))}</h2><p>{html.escape(l)}</p></div>'
+        f'<div class="kpi-card {html.escape(c)}"><div class="kpi-v">{html.escape(str(v))}</div><p>{html.escape(l)}</p></div>'
         for v, l, c in items)
     st.markdown(f'<div class="kpi-grid">{cards}</div>', unsafe_allow_html=True)
 
@@ -221,27 +221,45 @@ def pantalla_carga(ctx: dict, usuario: str, es_admin: bool):
     hd = horas_pp.get(persona, C.HORAS_DIA_DEFAULT)
     banner_objetivo(reg, persona, hd, feriados, hoy)
 
-    # --- Departamento > Tarea > Subtarea ---
-    deptos = list(dict.fromkeys(cat["Departamento"]))
-    depto = st.selectbox("Departamento", deptos, format_func=etiqueta_depto, key="c_dep")
-    sub_d = cat[cat["Departamento"] == depto]
-    c2, c3 = st.columns(2)
-    tarea = c2.selectbox("Tarea", list(dict.fromkeys(sub_d["Tarea"])), key=f"c_tar_{depto}")
-    subs = [s for s in sub_d[sub_d["Tarea"] == tarea]["Subtarea"] if s]
-    if subs:
-        subtarea = c3.selectbox("Subtarea", subs, key=f"c_sub_{depto}_{tarea}")
+    # --- Qué se carga ---
+    modo_carga = st.radio("¿Qué vas a cargar?", ["💼 Trabajo", "🟦 Disponible", "🏖️ Ausencia"],
+                          horizontal=True, key="c_modo")
+    if modo_carga.startswith("💼"):
+        # Disponible y Ausencias tienen su propia opción: acá van las tareas de cada departamento
+        cat_t = cat[~cat["Tarea"].isin([C.TAREA_DISPONIBLE, C.TAREA_AUSENCIAS])]
+        if cat_t.empty:
+            st.error("El catálogo no tiene tareas de trabajo. Revisá la hoja Catalogo.")
+            return
+        deptos = list(dict.fromkeys(cat_t["Departamento"]))
+        depto = st.selectbox("Departamento", deptos, format_func=etiqueta_depto, key="c_dep")
+        sub_d = cat_t[cat_t["Departamento"] == depto]
+        c2, c3 = st.columns(2)
+        tarea = c2.selectbox("Tarea", list(dict.fromkeys(sub_d["Tarea"])), key=f"c_tar_{depto}")
+        subs = [x for x in sub_d[sub_d["Tarea"] == tarea]["Subtarea"] if x]
+        if subs:
+            subtarea = c3.selectbox("Subtarea", subs, key=f"c_sub_{depto}_{tarea}")
+        else:
+            subtarea = ""
+            c3.caption("Esta tarea no tiene subtareas.")
+        fila_cat = sub_d[(sub_d["Tarea"] == tarea) & (sub_d["Subtarea"] == subtarea)]
+        tipo = fila_cat["Tipo"].iloc[0] if not fila_cat.empty else C.TIPO_TRABAJO
+        color, icono = C.COLORES_DEPTO.get(depto, "#0077B6"), C.ICONOS_DEPTO.get(depto, "📁")
+        ruta = f"<b>{html.escape(depto)}</b> › {html.escape(tarea)}" + (f" › {html.escape(subtarea)}" if subtarea else "")
+    elif modo_carga.startswith("🟦"):
+        depto, tarea, subtarea, tipo = C.DEPTO_GENERAL, C.TAREA_DISPONIBLE, "", C.TIPO_DISPONIBLE
+        color, icono, ruta = "#0096C7", "🟦", "<b>Disponible</b>"
+        st.caption("Para cuando no estás haciendo nada: completa tus horas del día. No hace falta elegir departamento.")
     else:
-        subtarea = ""
-        c3.caption("Esta tarea no tiene subtareas.")
-    fila_cat = sub_d[(sub_d["Tarea"] == tarea) & (sub_d["Subtarea"] == subtarea)]
-    tipo = fila_cat["Tipo"].iloc[0] if not fila_cat.empty else C.TIPO_TRABAJO
+        opciones = list(dict.fromkeys(x for x in cat[cat["Tarea"] == C.TAREA_AUSENCIAS]["Subtarea"] if x)) \
+            or ["Inasistencia (día personal)", "Vacaciones"]
+        depto, tarea, tipo = C.DEPTO_GENERAL, C.TAREA_AUSENCIAS, C.TIPO_AUSENCIA
+        subtarea = st.selectbox("Tipo de ausencia", opciones, key="c_aus")
+        color, icono, ruta = "#6B7C8C", "🏖️", f"<b>Ausencia</b> › {html.escape(subtarea)}"
     es_ausencia = tipo == C.TIPO_AUSENCIA
 
-    color = C.COLORES_DEPTO.get(depto, "#0077B6")
-    ruta = f"<b>{html.escape(depto)}</b> › {html.escape(tarea)}" + (f" › {html.escape(subtarea)}" if subtarea else "")
     st.markdown(
         f'<div class="dep-card" style="border-left:8px solid {color}; background:{color}22;">'
-        f'{C.ICONOS_DEPTO.get(depto, "📁")} {ruta}<span class="chip {CHIP_TIPO.get(tipo, "chip-trab")}">'
+        f'{icono} {ruta}<span class="chip {CHIP_TIPO.get(tipo, "chip-trab")}">'
         f'{html.escape(tipo)}</span></div>', unsafe_allow_html=True)
 
     # --- Cuándo y cuánto ---
@@ -320,16 +338,23 @@ def pantalla_carga(ctx: dict, usuario: str, es_admin: bool):
             else:
                 st.error(f"No se pudo guardar: {error}")
 
-    seccion_mis_cargas(reg, persona)
+    seccion_mis_cargas(reg, persona, hoy)
 
 
-def seccion_mis_cargas(reg: pd.DataFrame, persona: str):
+def seccion_mis_cargas(reg: pd.DataFrame, persona: str, hoy: date):
     st.divider()
-    seccion("🗂️ Cargas recientes")
-    mis = reg[reg["Persona"] == persona].sort_values(["Fecha", "Registrado"], ascending=False).head(40)
+    seccion("🗂️ Cargas del mes")
+    propias = reg[reg["Persona"] == persona]
+    anios = sorted({hoy.year, *propias["Fecha"].dt.year.astype(int).tolist()})
+    f1, f2, _ = st.columns([1.3, 1.6, 2.5])
+    anio = f1.selectbox("Año", anios, index=anios.index(hoy.year), key="mc_anio")
+    mes = f2.selectbox("Mes", list(range(1, 13)), index=hoy.month - 1,
+                       format_func=lambda m: C.MESES_ES[m], key="mc_mes")
+    mis = calc.del_mes(propias, anio, mes).sort_values(["Fecha", "Registrado"], ascending=False)
     if mis.empty:
-        st.caption("Todavía no hay cargas.")
+        st.caption(f"No hay cargas de {persona} en {C.MESES_ES[mes]} {anio}.")
         return
+    st.caption(f"{len(mis)} carga(s) · {fmt_hs(float(mis['Horas'].sum()))} hs en {C.MESES_ES[mes]} {anio}")
     st.dataframe(pd.DataFrame({
         "Fecha": mis["Fecha"].dt.strftime("%d/%m/%Y"), "Departamento": mis["Departamento"],
         "Tarea": mis["Tarea"], "Subtarea": mis["Subtarea"],
@@ -379,7 +404,7 @@ def pantalla_resumen(ctx: dict, usuario: str, es_admin: bool):
     hoy = hoy_ar()
     st.header("📊 Panel de control")
     anios = sorted({hoy.year - 1, hoy.year, hoy.year + 1, *reg["Fecha"].dt.year.astype(int).tolist()})
-    f1, f2, _ = st.columns([1, 1, 3])
+    f1, f2, _ = st.columns([1.3, 1.6, 2.5])
     anio = f1.selectbox("Año", anios, index=anios.index(hoy.year))
     mes = f2.selectbox("Mes", list(range(1, 13)), index=hoy.month - 1, format_func=lambda m: C.MESES_ES[m])
 
@@ -655,9 +680,9 @@ Los minutos van de a 5, con un mínimo de 10. Para repartir un trabajo en varios
 """)
     with st.expander("🟦 Disponible, Ausencias y horas extra"):
         st.markdown("""
-- **Disponible:** cuando no estás haciendo nada. Completa tus 6 horas del día.
+- **Disponible:** cuando no estás haciendo nada. Elegí la opción 🟦 *Disponible* (no hace falta elegir departamento). Completa tus 6 horas del día.
 - **Gestión y mejoras del departamento:** también cuenta como tiempo libre.
-- **Ausencias:** *Inasistencia* o *Vacaciones*. Bajan tu capacidad y no cuentan como trabajo. En vacaciones se cargan
+- **Ausencias:** elegí 🏖️ *Ausencia* y después *Inasistencia* o *Vacaciones*. Bajan tu capacidad y no cuentan como trabajo. En vacaciones se cargan
   solo los días hábiles entre *Desde* y *Hasta*.
 - **Horas extra:** no hay que marcarlas. Si en un día trabajás más que tu capacidad, o trabajás un fin de semana o
   feriado, la diferencia cuenta sola como extra.
