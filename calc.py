@@ -95,14 +95,15 @@ def horas_por_persona(personas: pd.DataFrame) -> dict:
 # ----------------------------------------------------------------------------
 
 def _mapas_tipo(df_cat: pd.DataFrame):
-    exacto, por_tarea = {}, {}
+    exacto, por_tarea, solo_tarea = {}, {}, {}
     if df_cat is not None and not df_cat.empty:
         for r in df_cat.itertuples():
             d, t, s, tipo = (str(r.Departamento).strip(), str(r.Tarea).strip(),
                               str(r.Subtarea).strip(), str(r.Tipo).strip())
             exacto[(d, t, s)] = tipo
             por_tarea.setdefault((d, t), tipo)
-    return exacto, por_tarea
+            solo_tarea.setdefault(t, tipo)
+    return exacto, por_tarea, solo_tarea
 
 
 def preparar_registros(df_reg: pd.DataFrame, df_cat: pd.DataFrame) -> pd.DataFrame:
@@ -120,8 +121,10 @@ def preparar_registros(df_reg: pd.DataFrame, df_cat: pd.DataFrame) -> pd.DataFra
     out["Horas"] = out["Minutos"] / 60.0
     for c in ("ID", "Persona", "Departamento", "Tarea", "Subtarea", "Nota", "Registrado"):
         out[c] = out[c].fillna("").astype(str).str.strip()
-    exacto, por_tarea = _mapas_tipo(df_cat)
-    out["Tipo"] = [exacto.get((d, t, s)) or por_tarea.get((d, t)) or C.TIPO_TRABAJO
+    exacto, por_tarea, solo_tarea = _mapas_tipo(df_cat)
+    # Si no hay coincidencia exacta se busca por departamento+tarea y por último solo por tarea
+    # (así «Disponible» y «Ausencias» funcionan aunque se carguen sin departamento).
+    out["Tipo"] = [exacto.get((d, t, s)) or por_tarea.get((d, t)) or solo_tarea.get(t) or C.TIPO_TRABAJO
                    for d, t, s in zip(out["Departamento"], out["Tarea"], out["Subtarea"])]
     return out.reset_index(drop=True)
 
