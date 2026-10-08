@@ -58,6 +58,11 @@ COLORES_DEPTO = {
     "RECURSOS HUMANOS": "#A8902B", "DOCUMENTACIÓN": "#3E9B3E", "COOPERATIVA": "#595959",
 }
 
+ICONOS_DEPTO = {
+    "SUELDOS": "💰", "GERENCIAL": "🧭", "TRÁMITES": "⚖️", "IMPUESTOS": "🧾", "CONTABILIDAD": "📒",
+    "ATENCIÓN AL CLIENTE": "📞", "RECURSOS HUMANOS": "🧑‍🤝‍🧑", "DOCUMENTACIÓN": "📄", "COOPERATIVA": "🤝",
+}
+
 MESES_ES = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
             7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre",
             12: "Diciembre"}
