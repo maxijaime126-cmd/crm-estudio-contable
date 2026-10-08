@@ -1,0 +1,72 @@
+# Mantiene despiertas las apps de Streamlit Cloud.
+# Abre cada app en un navegador (una visita real, que es lo que cuenta para Streamlit).
+# Si la encuentra dormida, aprieta el botón "Yes, get this app back up!".
+# Si algo falla, GitHub te manda un mail.
+name: Mantener despiertas las apps de Streamlit
+
+on:
+  schedule:
+    - cron: "20 10 * * *"   # 07:20 de Argentina: justo antes de empezar a trabajar
+    - cron: "0 */6 * * *"   # y cada 6 horas (Streamlit duerme a las 12 hs sin visitas)
+  workflow_dispatch:        # permite correrlo a mano desde la pestaña Actions
+
+jobs:
+  despertar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar el navegador
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: Visitar las apps
+        env:
+          # >>> CAMBIÁ ESTO por la dirección de tus apps (separadas por coma, sin espacios) <<<
+          APP_URLS: "https://maxijaime126-cmd-crm-estudio-contable-app-qdljfs.streamlit.app,https://crm-estudio-contable-sirpkqomhk5nmadyzfdaup.streamlit.app"
+        run: |
+          python - <<'PY'
+          import os, re, sys
+          from playwright.sync_api import sync_playwright
+
+          urls = [u.strip() for u in os.environ["APP_URLS"].split(",") if u.strip()]
+          todo_ok = True
+
+          with sync_playwright() as p:
+              navegador = p.chromium.launch()
+              for url in urls:
+                  pagina = navegador.new_page()
+                  estado = "ya estaba despierta"
+                  try:
+                      pagina.goto(url, wait_until="domcontentloaded", timeout=60000)
+                      pagina.wait_for_timeout(8000)
+                      boton = pagina.get_by_role("button", name=re.compile(r"get this app back up", re.I))
+                      if boton.count() > 0:
+                          print(f"{url}: estaba dormida, la despierto...")
+                          boton.first.click()
+                          estado = "estaba dormida y la desperté"
+                          pagina.wait_for_timeout(5000)
+                      cargo = False
+                      for _ in range(30):  # hasta ~2,5 minutos esperando que cargue
+                          if (pagina.locator("iframe[title='streamlitApp']").count() > 0
+                                  or pagina.locator("[data-testid='stApp']").count() > 0):
+                              cargo = True
+                              break
+                          pagina.wait_for_timeout(5000)
+                      if not cargo:
+                          raise RuntimeError("la app no terminó de cargar")
+                      pagina.wait_for_timeout(15000)  # sesión abierta unos segundos: cuenta como visita
+                      print(f"{url}: OK ({estado})")
+                  except Exception as e:
+                      print(f"{url}: ERROR -> {e}")
+                      todo_ok = False
+                  finally:
+                      pagina.close()
+              navegador.close()
+
+          sys.exit(0 if todo_ok else 1)
+          PY
