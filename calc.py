@@ -275,3 +275,117 @@ def quien_puede_ayudar(reg: pd.DataFrame, dia: date, horas_personas: dict,
                       "Margen (hs)": round(margen, 1)})
     out = pd.DataFrame(filas)
     return out.sort_values("Margen (hs)", ascending=False).reset_index(drop=True) if not out.empty else out
+
+
+# ----------------------------------------------------------------------------
+# Etapa 2: semanas, objetivo del mes, tendencia, desvío
+# ----------------------------------------------------------------------------
+
+def meses_atras(anio: int, mes: int, n: int) -> list[tuple[int, int]]:
+    """Los últimos n meses (del más viejo al actual), incluyendo el indicado."""
+    out, a, m = [], anio, mes
+    for _ in range(n):
+        out.append((a, m))
+        m -= 1
+        if m == 0:
+            a, m = a - 1, 12
+    return out[::-1]
+
+
+def semanas_del_mes(anio: int, mes: int) -> list[tuple[str, date, date]]:
+    """Semanas de lunes a domingo recortadas al mes. Ej.: ('Sem 1 (01/10-04/10)', ini, fin)."""
+    ini, fin = rango_mes(anio, mes)
+    out, d, n = [], ini, 1
+    while d <= fin:
+        fin_sem = min(fin, d + timedelta(days=6 - d.weekday()))
+        out.append((f"Sem {n} ({d:%d/%m}-{fin_sem:%d/%m})", d, fin_sem))
+        d, n = fin_sem + timedelta(days=1), n + 1
+    return out
+
+
+def semanal_departamentos(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict,
+                          feriados: set, departamentos: list[str]):
+    """Devuelve (horas, resumen):
+    - horas: departamento x semana, horas de TRABAJO.
+    - resumen: por semana, capacidad del equipo, trabajo total, horas libres y ocupación %.
+    Libre = capacidad del equipo - trabajo total (lo que el equipo podría absorber sin extras)."""
+    horas_d, cap_d = matriz_departamentos(reg, anio, mes, horas_personas, feriados, departamentos)
+    semanas = semanas_del_mes(anio, mes)
+    etiquetas = [s[0] for s in semanas]
+    h = pd.DataFrame(0.0, index=horas_d.index, columns=etiquetas)
+    capacidad = pd.Series(0.0, index=etiquetas)
+    for etiqueta, a, b in semanas:
+        cols = [d for d in horas_d.columns if a <= d <= b]
+        h[etiqueta] = horas_d[cols].sum(axis=1)
+        capacidad[etiqueta] = float(cap_d[cols].sum())
+    total = h.sum(axis=0)
+    libre = (capacidad - total).clip(lower=0)
+    ocup = (total / capacidad * 100).where(capacidad > 0)
+    resumen = pd.DataFrame({"Capacidad del equipo (hs)": capacidad.round(1),
+                            "Trabajo total (hs)": total.round(1),
+                            "Libre (hs)": libre.round(1),
+                            "Ocupación %": ocup.round(0)})
+    return h, resumen
+
+
+def objetivo_mes(reg: pd.DataFrame, persona: str, anio: int, mes: int,
+                 horas_dia: float, feriados: set) -> tuple[float, float]:
+    """(horas que hay que cargar en el mes, horas cargadas hasta ahora).
+    Objetivo = días hábiles x horas por día. Cargadas incluye Disponible y Ausencias."""
+    ini, fin = rango_mes(anio, mes)
+    objetivo = len(dias_habiles(ini, fin, feriados)) * horas_dia
+    rp = reg[reg["Persona"] == persona]
+    rp = rp[(rp["Fecha"].dt.date >= ini) & (rp["Fecha"].dt.date <= fin)]
+    return float(objetivo), float(rp["Horas"].sum())
+
+
+def tendencia_departamentos(reg: pd.DataFrame, persona: str, anio: int, mes: int, n: int = 6):
+    """(DataFrame Mes/Departamento/Horas, lista de meses en orden). Solo horas de trabajo."""
+    base = reg[(reg["Persona"] == persona) & (reg["Tipo"] == C.TIPO_TRABAJO)]
+    meses = meses_atras(anio, mes, n)
+    etiquetas = [f"{C.MESES_ES[m][:3]} {a}" for a, m in meses]
+    filas = []
+    for (a, m), etiqueta in zip(meses, etiquetas):
+        g = del_mes(base, a, m).groupby("Departamento")["Horas"].sum()
+        filas += [{"Mes": etiqueta, "Departamento": dep, "Horas": round(float(h), 1)} for dep, h in g.items()]
+    return pd.DataFrame(filas, columns=["Mes", "Departamento", "Horas"]), etiquetas
+
+
+def distribucion_semanal(reg: pd.DataFrame, persona: str, anio: int, mes: int):
+    """(DataFrame Semana/Departamento/Horas, lista de semanas en orden). Solo trabajo."""
+    base = reg[(reg["Persona"] == persona) & (reg["Tipo"] == C.TIPO_TRABAJO)]
+    semanas = semanas_del_mes(anio, mes)
+    filas = []
+    for etiqueta, a, b in semanas:
+        r = base[(base["Fecha"].dt.date >= a) & (base["Fecha"].dt.date <= b)]
+        g = r.groupby("Departamento")["Horas"].sum()
+        filas += [{"Semana": etiqueta, "Departamento": dep, "Horas": round(float(h), 1)} for dep, h in g.items()]
+    return pd.DataFrame(filas, columns=["Semana", "Departamento", "Horas"]), [s[0] for s in semanas]
+
+
+def desvio_historico(reg: pd.DataFrame, persona: str, anio: int, mes: int,
+                     nivel: str = "Departamento", n_prev: int = 2):
+    """Horas del mes contra el promedio de los n_prev meses anteriores CON datos.
+    nivel: 'Departamento' o 'Tarea'. Devuelve (DataFrame, cantidad de meses usados)."""
+    cols = ["Departamento"] if nivel == "Departamento" else ["Departamento", "Tarea"]
+    base = reg[(reg["Persona"] == persona) & (reg["Tipo"] == C.TIPO_TRABAJO)]
+    actual = del_mes(base, anio, mes).groupby(cols)["Horas"].sum()
+    series = []
+    for a, m in meses_atras(anio, mes, n_prev + 1)[:-1]:
+        s = del_mes(base, a, m).groupby(cols)["Horas"].sum()
+        if not s.empty:
+            series.append(s)
+    out = pd.DataFrame({"Actual (hs)": actual})
+    if series:
+        prom = pd.concat(series, axis=1).fillna(0).mean(axis=1)
+        out = out.join(prom.rename("Promedio previo (hs)"), how="outer")
+    else:
+        out["Promedio previo (hs)"] = float("nan")
+    out = out.fillna({"Actual (hs)": 0.0})
+    if series:
+        out["Promedio previo (hs)"] = out["Promedio previo (hs)"].fillna(0.0)
+    out["Desvío (hs)"] = out["Actual (hs)"] - out["Promedio previo (hs)"]
+    out["Desvío %"] = (out["Desvío (hs)"] / out["Promedio previo (hs)"] * 100).where(out["Promedio previo (hs)"] > 0)
+    out = out.round(1).reset_index()
+    out = out.reindex(out["Desvío (hs)"].abs().sort_values(ascending=False, na_position="last").index)
+    return out.reset_index(drop=True), len(series)
