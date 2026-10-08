@@ -267,17 +267,26 @@ def top_dias_pico(horas: pd.DataFrame, cap_equipo: pd.Series, n: int = 3) -> pd.
 
 def quien_puede_ayudar(reg: pd.DataFrame, dia: date, horas_personas: dict,
                        feriados: set) -> pd.DataFrame:
-    """Para un día: trabajo, horas 'Disponible' y margen de cada persona."""
+    """Para un día: trabajo, horas 'Disponible' y margen de cada persona.
+    Si alguien no cargó nada ese día, NO se supone que está libre: figura 'sin carga ese día'."""
     filas = []
     for persona, hd in horas_personas.items():
         rp = reg[(reg["Persona"] == persona) & (reg["Fecha"].dt.date == dia)]
         d = por_dia(rp, hd, feriados, dia, dia).iloc[0]
-        margen = max(0.0, float(d["Capacidad"]) - float(d[C.TIPO_TRABAJO]))
-        filas.append({"Persona": persona, "Trabajo (hs)": round(float(d[C.TIPO_TRABAJO]), 1),
+        if rp.empty:
+            estado = "día no hábil" if d["Capacidad"] == 0 else "sin carga ese día"
+            margen = float("nan")
+        else:
+            estado = "con carga"
+            margen = round(max(0.0, float(d["Capacidad"]) - float(d[C.TIPO_TRABAJO])), 1)
+        filas.append({"Persona": persona, "Estado": estado,
+                      "Trabajo (hs)": round(float(d[C.TIPO_TRABAJO]), 1),
                       "Disponible cargado (hs)": round(float(d[C.TIPO_DISPONIBLE]), 1),
-                      "Margen (hs)": round(margen, 1)})
+                      "Margen (hs)": margen})
     out = pd.DataFrame(filas)
-    return out.sort_values("Margen (hs)", ascending=False).reset_index(drop=True) if not out.empty else out
+    if out.empty:
+        return out
+    return out.sort_values("Margen (hs)", ascending=False, na_position="last").reset_index(drop=True)
 
 
 # ----------------------------------------------------------------------------
@@ -392,3 +401,72 @@ def desvio_historico(reg: pd.DataFrame, persona: str, anio: int, mes: int,
     out = out.round(1).reset_index()
     out = out.reindex(out["Desvío (hs)"].abs().sort_values(ascending=False, na_position="last").index)
     return out.reset_index(drop=True), len(series)
+
+
+# ----------------------------------------------------------------------------
+# Calendario de saturación por departamento
+# ----------------------------------------------------------------------------
+TOTAL_EQUIPO = "TOTAL EQUIPO"
+
+
+def dias_con_datos(reg: pd.DataFrame, anio: int, mes: int) -> set:
+    """Días del mes en que alguien del equipo cargó algo (de cualquier tipo). Un día sin ninguna
+    carga es 'sin datos': no se puede saber si estuvo libre o si faltó cargar."""
+    ini, fin = rango_mes(anio, mes)
+    r = reg[(reg["Fecha"].dt.date >= ini) & (reg["Fecha"].dt.date <= fin)]
+    return set(r["Fecha"].dt.date)
+
+
+def _pct(horas: float, cap: float, pico: float, modo: str, hay_datos: bool) -> float:
+    """% para pintar una celda. NaN = sin datos (se muestra en gris).
+    modo 'equipo': horas / capacidad del equipo ese día. modo 'pico': horas / mayor día del mismo departamento."""
+    if not hay_datos:
+        return float("nan")
+    if modo == "equipo":
+        if cap > 0:
+            return min(100.0, horas / cap * 100)
+        return 100.0 if horas > 0 else float("nan")   # fin de semana o feriado trabajado: todo es extra
+    return min(100.0, horas / pico * 100) if pico > 0 else float("nan")
+
+
+def calendario_z(horas: pd.DataFrame, cap: pd.Series, con_datos: set, modo: str = "equipo"):
+    """(z, texto): departamento x día, con una fila TOTAL EQUIPO arriba. z en % (NaN = sin datos)."""
+    total = pd.DataFrame([horas.sum(axis=0)], index=[TOTAL_EQUIPO])
+    h = pd.concat([total, horas])
+    z = pd.DataFrame(float("nan"), index=h.index, columns=h.columns)
+    texto = pd.DataFrame("", index=h.index, columns=h.columns)
+    for fila in h.index:
+        pico = max([float(h.loc[fila, d]) for d in h.columns if d in con_datos] or [0.0])
+        for d in h.columns:
+            v = float(h.loc[fila, d])
+            z.loc[fila, d] = _pct(v, float(cap.get(d, 0.0)), pico, modo, d in con_datos)
+            texto.loc[fila, d] = f"{v:.1f}" if v > 0 else ""
+    return z, texto
+
+
+def grilla_calendario(horas_dep: pd.Series, cap: pd.Series, con_datos: set, feriados: set,
+                      anio: int, mes: int, modo: str = "equipo"):
+    """Calendario de un departamento: (etiquetas de semana, z, texto), matrices semanas x 7 (lun a dom)."""
+    ini, fin = rango_mes(anio, mes)
+    semanas = semanas_del_mes(anio, mes)
+    pico = max([float(horas_dep.get(d, 0.0)) for d in con_datos if ini <= d <= fin] or [0.0])
+    z, texto = [], []
+    for _, a, _b in semanas:
+        lunes = a - timedelta(days=a.weekday())
+        fz, ft = [], []
+        for i in range(7):
+            d = lunes + timedelta(days=i)
+            if d < ini or d > fin:
+                fz.append(float("nan"))
+                ft.append("")
+                continue
+            h = float(horas_dep.get(d, 0.0))
+            if d in feriados and h == 0:
+                fz.append(float("nan"))
+                ft.append(f"{d.day}<br>feriado")
+                continue
+            fz.append(_pct(h, float(cap.get(d, 0.0)), pico, modo, d in con_datos))
+            ft.append(f"<b>{d.day}</b>" + (f"<br>{h:.1f} hs" if h > 0 else ""))
+        z.append(fz)
+        texto.append(ft)
+    return [x[0] for x in semanas], z, texto
