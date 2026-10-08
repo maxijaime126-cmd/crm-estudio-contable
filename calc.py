@@ -470,3 +470,44 @@ def grilla_calendario(horas_dep: pd.Series, cap: pd.Series, con_datos: set, feri
         z.append(fz)
         texto.append(ft)
     return [x[0] for x in semanas], z, texto
+
+
+# ----------------------------------------------------------------------------
+# Resumen día por día (¿completó las horas del día?)
+# ----------------------------------------------------------------------------
+def _hs(x: float) -> str:
+    return f"{x:.1f}".replace(".", ",")
+
+
+def resumen_diario(reg: pd.DataFrame, persona: str, anio: int, mes: int,
+                   horas_dia: float, feriados: set, hoy: date) -> pd.DataFrame:
+    """Una fila por día con carga, más los días hábiles ya pasados sin carga. Dice si el día quedó
+    completo (trabajo + disponible + ausencia = horas del día), si faltan horas o si hay de más.
+    El día de hoy no figura como 'sin carga' porque todavía se puede cargar."""
+    ini, fin = rango_mes(anio, mes)
+    rp = reg[(reg["Persona"] == persona) & (reg["Fecha"].dt.date >= ini) & (reg["Fecha"].dt.date <= fin)]
+    d = por_dia(rp, horas_dia, feriados, ini, fin)
+    filas = []
+    for dia, r in d.iterrows():
+        f = dia.date()
+        total = float(r[C.TIPO_TRABAJO] + r[C.TIPO_DISPONIBLE] + r[C.TIPO_AUSENCIA])
+        hab = es_habil(f, feriados)
+        if total <= 0 and (not hab or f >= hoy):
+            continue
+        meta, minutos = (horas_dia * 60 if hab else 0.0), round(total * 60)
+        if minutos == 0:
+            estado = "❌ sin carga"
+        elif not hab:
+            estado = "⏱️ día no hábil: cuenta como extra"
+        elif abs(minutos - meta) <= 2:
+            estado = "✅ completo"
+        elif minutos < meta:
+            estado = f"⚠️ faltan {_hs((meta - minutos) / 60)} hs"
+        else:
+            estado = f"⏱️ {_hs((minutos - meta) / 60)} hs de más"
+        filas.append({"Fecha": f, "Trabajo (hs)": round(float(r[C.TIPO_TRABAJO]), 1),
+                      "Disponible (hs)": round(float(r[C.TIPO_DISPONIBLE]), 1),
+                      "Ausencia (hs)": round(float(r[C.TIPO_AUSENCIA]), 1),
+                      "Total (hs)": round(total, 1), "Estado": estado})
+    return pd.DataFrame(filas, columns=["Fecha", "Trabajo (hs)", "Disponible (hs)", "Ausencia (hs)",
+                                        "Total (hs)", "Estado"])
