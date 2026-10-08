@@ -385,6 +385,30 @@ class TestCalendario(unittest.TestCase):
         self.assertEqual(r.iloc[0]["Margen (hs)"], 6.0)
 
 
+class TestResumenDiario(unittest.TestCase):
+    def test_estados_por_dia(self):
+        reg = registros([
+            ("2026-10-05", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 300),      # 5 hs trabajo
+            ("2026-10-05", "Natalia", "GENERAL", "Disponible", "", 60),                 # + 1 h libre = completo
+            ("2026-10-06", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 180),      # 3 hs: faltan 3
+            ("2026-10-07", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 420),      # 7 hs: 1 de más
+            ("2026-10-10", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 60),       # sábado
+            ("2026-10-13", "Natalia", "GENERAL", "Ausencias", "Vacaciones", 360),       # planificada a futuro
+        ])
+        r = calc.resumen_diario(reg, "Natalia", 2026, 10, HD, FER, date(2026, 10, 9))
+        est = dict(zip(r["Fecha"], r["Estado"]))
+        self.assertEqual(est[date(2026, 10, 5)], "✅ completo")
+        self.assertEqual(est[date(2026, 10, 6)], "⚠️ faltan 3,0 hs")
+        self.assertEqual(est[date(2026, 10, 7)], "⏱️ 1,0 hs de más")
+        self.assertEqual(est[date(2026, 10, 8)], "❌ sin carga")
+        self.assertNotIn(date(2026, 10, 9), est)                       # hoy todavía se puede cargar
+        self.assertEqual(est[date(2026, 10, 10)], "⏱️ día no hábil: cuenta como extra")
+        self.assertNotIn(date(2026, 10, 12), est)                      # feriado futuro sin carga
+        self.assertEqual(est[date(2026, 10, 13)], "✅ completo")       # la vacación ya cargada cuenta
+        fila5 = r[r["Fecha"] == date(2026, 10, 5)].iloc[0]
+        self.assertEqual((fila5["Trabajo (hs)"], fila5["Disponible (hs)"], fila5["Total (hs)"]), (5.0, 1.0, 6.0))
+
+
 class FakeWS:
     def __init__(self, title, ids):
         self.title, self.rows, self.col_count, self.id = title, [], 6, next(ids)
