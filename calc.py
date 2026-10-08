@@ -479,6 +479,19 @@ def _hs(x: float) -> str:
     return f"{x:.1f}".replace(".", ",")
 
 
+def _estado_dia(minutos: int, meta_min: float, habil: bool) -> str:
+    """Texto de estado de un día según lo cargado (minutos) y lo que correspondía (meta_min)."""
+    if minutos == 0:
+        return "❌ sin carga"
+    if not habil:
+        return "⏱️ día no hábil: cuenta como extra"
+    if abs(minutos - meta_min) <= 2:
+        return "✅ completo"
+    if minutos < meta_min:
+        return f"⚠️ faltan {_hs((meta_min - minutos) / 60)} hs"
+    return f"⏱️ {_hs((minutos - meta_min) / 60)} hs de más"
+
+
 def resumen_diario(reg: pd.DataFrame, persona: str, anio: int, mes: int,
                    horas_dia: float, feriados: set, hoy: date) -> pd.DataFrame:
     """Una fila por día con carga, más los días hábiles ya pasados sin carga. Dice si el día quedó
@@ -494,20 +507,25 @@ def resumen_diario(reg: pd.DataFrame, persona: str, anio: int, mes: int,
         hab = es_habil(f, feriados)
         if total <= 0 and (not hab or f >= hoy):
             continue
-        meta, minutos = (horas_dia * 60 if hab else 0.0), round(total * 60)
-        if minutos == 0:
-            estado = "❌ sin carga"
-        elif not hab:
-            estado = "⏱️ día no hábil: cuenta como extra"
-        elif abs(minutos - meta) <= 2:
-            estado = "✅ completo"
-        elif minutos < meta:
-            estado = f"⚠️ faltan {_hs((meta - minutos) / 60)} hs"
-        else:
-            estado = f"⏱️ {_hs((minutos - meta) / 60)} hs de más"
+        estado = _estado_dia(round(total * 60), horas_dia * 60 if hab else 0.0, hab)
         filas.append({"Fecha": f, "Trabajo (hs)": round(float(r[C.TIPO_TRABAJO]), 1),
                       "Disponible (hs)": round(float(r[C.TIPO_DISPONIBLE]), 1),
                       "Ausencia (hs)": round(float(r[C.TIPO_AUSENCIA]), 1),
                       "Total (hs)": round(total, 1), "Estado": estado})
     return pd.DataFrame(filas, columns=["Fecha", "Trabajo (hs)", "Disponible (hs)", "Ausencia (hs)",
                                         "Total (hs)", "Estado"])
+
+
+def estado_dia(reg: pd.DataFrame, dia: date, horas_personas: dict, feriados: set) -> pd.DataFrame:
+    """¿Quién completó las horas de un día? Una fila por persona (para el Admin)."""
+    hab = es_habil(dia, feriados)
+    filas = []
+    for persona, hd in horas_personas.items():
+        rp = reg[(reg["Persona"] == persona) & (reg["Fecha"].dt.date == dia)]
+        d = por_dia(rp, hd, feriados, dia, dia).iloc[0]
+        total = float(d[C.TIPO_TRABAJO] + d[C.TIPO_DISPONIBLE] + d[C.TIPO_AUSENCIA])
+        minutos = round(total * 60)
+        estado = "— día no hábil" if (not hab and minutos == 0) else _estado_dia(minutos, hd * 60 if hab else 0.0, hab)
+        filas.append({"Persona": persona, "Cargadas (hs)": round(total, 1),
+                      "Corresponden (hs)": round(hd if hab else 0.0, 1), "Estado": estado})
+    return pd.DataFrame(filas, columns=["Persona", "Cargadas (hs)", "Corresponden (hs)", "Estado"])
