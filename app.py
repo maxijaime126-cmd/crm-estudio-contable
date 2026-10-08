@@ -263,37 +263,38 @@ def pantalla_carga(ctx: dict, usuario: str, es_admin: bool):
         f'{html.escape(tipo)}</span></div>', unsafe_allow_html=True)
 
     # --- Cuándo y cuánto ---
+    ver = st.session_state.get("f_ver", 0)   # sube al guardar: así los campos vuelven a su valor inicial
     if es_ausencia:
         st.caption("Las ausencias bajan tu capacidad del mes; no cuentan como trabajo.")
         d1, d2 = st.columns(2)
-        desde = d1.date_input("Desde", value=hoy, format="DD/MM/YYYY", key="a_desde")
-        hasta = d2.date_input("Hasta", value=hoy, format="DD/MM/YYYY", key="a_hasta")
-        completo = st.checkbox(f"Día completo ({fmt_hs(hd)} hs por día)", value=True, key="a_comp")
+        desde = d1.date_input("Desde", value=hoy, format="DD/MM/YYYY", key=f"a_desde_{ver}")
+        hasta = d2.date_input("Hasta", value=hoy, format="DD/MM/YYYY", key=f"a_hasta_{ver}")
+        completo = st.checkbox(f"Día completo ({fmt_hs(hd)} hs por día)", value=True, key=f"a_comp_{ver}")
         if completo:
             minutos = int(hd * 60)
         else:
             minutos = st.number_input("Minutos por día", min_value=C.MIN_MINUTOS,
-                                      max_value=int(hd * 60), step=C.PASO_MINUTOS, value=120, key="a_min")
+                                      max_value=int(hd * 60), step=C.PASO_MINUTOS, value=120, key=f"a_min_{ver}")
         modo, solo_habiles = "por_dia", True
     else:
         modalidad = st.radio("¿Cuándo?", ["Un día", "Repartir en varios días"], horizontal=True)
         if modalidad == "Un día":
             desde = hasta = st.date_input("Fecha", value=hoy, max_value=hoy, format="DD/MM/YYYY", key="t_fecha")
             minutos = st.number_input("Minutos", min_value=C.MIN_MINUTOS, max_value=C.MAX_MINUTOS_CARGA,
-                                      step=C.PASO_MINUTOS, value=60, key="t_min")
+                                      step=C.PASO_MINUTOS, value=60, key=f"t_min_{ver}")
             modo = "por_dia"
         else:
             d1, d2 = st.columns(2)
-            desde = d1.date_input("Desde", value=hoy, max_value=hoy, format="DD/MM/YYYY", key="t_desde")
-            hasta = d2.date_input("Hasta", value=hoy, max_value=hoy, format="DD/MM/YYYY", key="t_hasta")
+            desde = d1.date_input("Desde", value=hoy, max_value=hoy, format="DD/MM/YYYY", key=f"t_desde_{ver}")
+            hasta = d2.date_input("Hasta", value=hoy, max_value=hoy, format="DD/MM/YYYY", key=f"t_hasta_{ver}")
             minutos = st.number_input("Minutos totales a repartir", min_value=C.MIN_MINUTOS,
-                                      max_value=60 * 200, step=C.PASO_MINUTOS, value=600, key="t_tot")
+                                      max_value=60 * 200, step=C.PASO_MINUTOS, value=600, key=f"t_tot_{ver}")
             modo = "total"
         solo_habiles = False
         st.caption(f"= {fmt_min(minutos)}")
 
     obligatoria = subtarea == C.SUBTAREA_NOTA_OBLIGATORIA
-    nota = st.text_input("Nota (obligatoria: contá qué fue)" if obligatoria else "Nota (opcional)", key="c_nota")
+    nota = st.text_input("Nota (obligatoria: contá qué fue)" if obligatoria else "Nota (opcional)", key=f"c_nota_{ver}")
 
     # --- Vista previa ---
     filas = []
@@ -309,14 +310,8 @@ def pantalla_carga(ctx: dict, usuario: str, es_admin: bool):
         else:
             total = sum(f["Minutos"] for f in filas) / 60
             st.info(f"Se van a cargar {len(filas)} días ({desde:%d/%m} al {hasta:%d/%m}): {fmt_hs(total)} hs en total.")
-        if len(filas) == 1 and tipo == C.TIPO_TRABAJO:
-            rp = reg[(reg["Persona"] == persona) & (reg["Fecha"].dt.date == desde)]
-            d = calc.por_dia(rp, hd, feriados, desde, desde).iloc[0]
-            trabajo = float(d[C.TIPO_TRABAJO]) + filas[0]["Minutos"] / 60
-            extra = max(0.0, trabajo - float(d["Capacidad"]))
-            st.caption(f"Ese día ya tenías {fmt_hs(float(d[C.TIPO_TRABAJO]))} hs de trabajo cargadas.")
-            if extra > 0:
-                st.warning(f"Con esta carga ese día quedan {fmt_hs(extra)} hs extra.")
+        if len(filas) == 1:
+            resumen_dia(reg, persona, desde, hd, feriados, filas[0]["Minutos"] / 60, tipo)
 
     if st.button("💾 Guardar", type="primary", disabled=not filas):
         if obligatoria and not nota.strip():
@@ -334,44 +329,111 @@ def pantalla_carga(ctx: dict, usuario: str, es_admin: bool):
                 error = e
             if guardado:
                 st.session_state["msg_ok"] = f"✅ Guardado: {len(filas)} registro(s) de {persona}."
+                st.session_state["f_ver"] = ver + 1   # limpia minutos y nota para la próxima carga
                 st.rerun()
             else:
                 st.error(f"No se pudo guardar: {error}")
 
-    seccion_mis_cargas(reg, persona, hoy)
+    seccion_mis_cargas(reg, persona, hoy, hd, feriados, desde)
 
 
-def seccion_mis_cargas(reg: pd.DataFrame, persona: str, hoy: date):
+def resumen_dia(reg, persona, dia, hd, feriados, nuevas_hs, tipo):
+    """Cuánto lleva cargado ese día y cómo queda con la carga que está por guardar."""
+    rp = reg[(reg["Persona"] == persona) & (reg["Fecha"].dt.date == dia)]
+    d = calc.por_dia(rp, hd, feriados, dia, dia).iloc[0]
+    llevas = float(d[C.TIPO_TRABAJO] + d[C.TIPO_DISPONIBLE] + d[C.TIPO_AUSENCIA])
+    meta = hd if calc.es_habil(dia, feriados) else 0.0
+    total = llevas + nuevas_hs
+    de_meta = f" de {fmt_hs(meta)} hs" if meta else ""
+    st.markdown(
+        f'<div class="obj-box">📅 <b>{dia:%d/%m}</b> · llevás <b>{fmt_hs(llevas)} hs</b> cargadas{de_meta}'
+        f' · con esta carga: <b>{fmt_hs(total)} hs</b></div>', unsafe_allow_html=True)
+    if meta > 0:
+        st.progress(min(1.0, total / meta))
+        falta = meta - total
+        if falta > 0.03:
+            st.caption(f"Con esta carga todavía te faltarían {fmt_hs(falta)} hs para completar el día.")
+        elif falta > -0.03:
+            st.caption("✅ Con esta carga completás las horas del día.")
+    else:
+        st.caption("Día no hábil (fin de semana o feriado): lo que trabajes cuenta como horas extra.")
+    if tipo == C.TIPO_TRABAJO:
+        extra = max(0.0, float(d[C.TIPO_TRABAJO]) + nuevas_hs - float(d["Capacidad"]))
+        if extra > 0.03:
+            st.warning(f"Con esta carga ese día quedan {fmt_hs(extra)} hs extra.")
+
+
+def tabla_cargas(df: pd.DataFrame, con_fecha: bool) -> pd.DataFrame:
+    """Tabla para mostrar: duración en horas y minutos, y una fila final con el TOTAL."""
+    v = pd.DataFrame({
+        "Departamento": df["Departamento"].tolist(), "Tarea": df["Tarea"].tolist(),
+        "Subtarea": df["Subtarea"].tolist(), "Duración": [fmt_min(m) for m in df["Minutos"]],
+        "Minutos": df["Minutos"].astype(int).tolist(), "Nota": df["Nota"].tolist()})
+    if con_fecha:
+        v.insert(0, "Fecha", df["Fecha"].dt.strftime("%d/%m/%Y").tolist())
+    total = int(df["Minutos"].sum())
+    fila = {c: "" for c in v.columns}
+    fila.update({"Departamento": "TOTAL", "Duración": fmt_min(total), "Minutos": total})
+    return pd.concat([v, pd.DataFrame([fila])], ignore_index=True)
+
+
+def seccion_mis_cargas(reg: pd.DataFrame, persona: str, hoy: date, hd: float, feriados: set, dia_ref: date):
     st.divider()
-    seccion("🗂️ Cargas del mes")
+    seccion("🗂️ Mis cargas")
     propias = reg[reg["Persona"] == persona]
-    anios = sorted({hoy.year, *propias["Fecha"].dt.year.astype(int).tolist()})
-    f1, f2, _ = st.columns([1.3, 1.6, 2.5])
-    anio = f1.selectbox("Año", anios, index=anios.index(hoy.year), key="mc_anio")
-    mes = f2.selectbox("Mes", list(range(1, 13)), index=hoy.month - 1,
-                       format_func=lambda m: C.MESES_ES[m], key="mc_mes")
-    mis = calc.del_mes(propias, anio, mes).sort_values(["Fecha", "Registrado"], ascending=False)
-    if mis.empty:
-        st.caption(f"No hay cargas de {persona} en {C.MESES_ES[mes]} {anio}.")
-        return
-    st.caption(f"{len(mis)} carga(s) · {fmt_hs(float(mis['Horas'].sum()))} hs en {C.MESES_ES[mes]} {anio}")
-    st.dataframe(pd.DataFrame({
-        "Fecha": mis["Fecha"].dt.strftime("%d/%m/%Y"), "Departamento": mis["Departamento"],
-        "Tarea": mis["Tarea"], "Subtarea": mis["Subtarea"],
-        "Minutos": mis["Minutos"].astype(int), "Nota": mis["Nota"]}), hide_index=True)
+    ver = st.radio("Ver", ["📅 Del día", "🗓️ Del mes"], horizontal=True, key="mc_ver")
+    if ver.startswith("📅"):
+        dia = st.date_input("Día", value=dia_ref, format="DD/MM/YYYY")
+        mostradas = propias[propias["Fecha"].dt.date == dia].sort_values("Registrado")
+        if mostradas.empty:
+            st.caption(f"No hay cargas de {persona} el {dia:%d/%m/%Y}.")
+            return
+        por_tipo = mostradas.groupby("Tipo")["Horas"].sum()
+        total_min = int(mostradas["Minutos"].sum())
+        st.markdown(
+            f'<div class="obj-box">📅 <b>{dia:%d/%m/%Y}</b> · total <b>{fmt_min(total_min)}</b> '
+            f'({fmt_hs(total_min / 60)} hs) · trabajo {fmt_hs(float(por_tipo.get(C.TIPO_TRABAJO, 0)))} hs · '
+            f'disponible {fmt_hs(float(por_tipo.get(C.TIPO_DISPONIBLE, 0)))} hs · '
+            f'ausencia {fmt_hs(float(por_tipo.get(C.TIPO_AUSENCIA, 0)))} hs</div>', unsafe_allow_html=True)
+        st.dataframe(tabla_cargas(mostradas, False), hide_index=True)
+    else:
+        anios = sorted({hoy.year, *propias["Fecha"].dt.year.astype(int).tolist()})
+        f1, f2, _ = st.columns([1.3, 1.6, 2.5])
+        anio = f1.selectbox("Año", anios, index=anios.index(hoy.year), key="mc_anio")
+        mes = f2.selectbox("Mes", list(range(1, 13)), index=hoy.month - 1,
+                           format_func=lambda m: C.MESES_ES[m], key="mc_mes")
+        mostradas = calc.del_mes(propias, anio, mes).sort_values(["Fecha", "Registrado"], ascending=False)
+        if mostradas.empty:
+            st.caption(f"No hay cargas de {persona} en {C.MESES_ES[mes]} {anio}.")
+            return
+        total_min = int(mostradas["Minutos"].sum())
+        st.caption(f"{len(mostradas)} carga(s) · {fmt_min(total_min)} ({fmt_hs(total_min / 60)} hs) "
+                   f"en {C.MESES_ES[mes]} {anio}")
+        resumen = calc.resumen_diario(reg, persona, anio, mes, hd, feriados, hoy)
+        if not resumen.empty:
+            st.markdown("**Día por día** (¿quedó completo?)")
+            resumen = resumen.copy()
+            resumen["Fecha"] = resumen["Fecha"].map(lambda d: f"{DIAS_ES[d.weekday()]} {d:%d/%m}")
+            st.dataframe(resumen, hide_index=True)
+        with st.expander("Ver todas las cargas del mes"):
+            st.dataframe(tabla_cargas(mostradas, True), hide_index=True)
+    editar_eliminar(mostradas)
 
-    editables = mis[mis["ID"] != ""]
+
+def editar_eliminar(mostradas: pd.DataFrame):
+    editables = mostradas[mostradas["ID"] != ""]
     if editables.empty:
         return
     with st.expander("✏️ Editar o eliminar una carga"):
         etiquetas = {r.ID: (f"{r.Fecha:%d/%m} · {r.Departamento} › {r.Tarea}"
-                            f"{' › ' + r.Subtarea if r.Subtarea else ''} · {int(r.Minutos)} min")
+                            f"{' › ' + r.Subtarea if r.Subtarea else ''} · {fmt_min(int(r.Minutos))}")
                      for r in editables.itertuples()}
         elegido = st.selectbox("Carga", list(etiquetas), format_func=lambda i: etiquetas[i])
         fila = editables[editables["ID"] == elegido].iloc[0]
         valor = max(C.PASO_MINUTOS, min(int(fila["Minutos"]), C.MAX_MINUTOS_CARGA))
         nuevos = st.number_input("Minutos", min_value=C.PASO_MINUTOS, max_value=C.MAX_MINUTOS_CARGA,
                                  step=C.PASO_MINUTOS, value=valor, key=f"e_min_{elegido}")
+        st.caption(f"= {fmt_min(nuevos)}")
         nueva_nota = st.text_input("Nota", value=fila["Nota"], key=f"e_nota_{elegido}")
         b1, b2 = st.columns(2)
         if b1.button("Guardar cambios", key=f"e_ok_{elegido}"):
@@ -753,8 +815,8 @@ Se editan directamente en el Google Sheet:
 - **Feriados:** Fecha (AAAA-MM-DD) y Motivo. Hay que agregar los de cada año nuevo.
 """)
     with st.expander("✏️ Me equivoqué en una carga"):
-        st.markdown("En **Cargar horas → Cargas recientes → Editar o eliminar una carga** podés cambiar los minutos y la "
-                    "nota, o borrarla.")
+        st.markdown("En **Cargar horas → Mis cargas → Editar o eliminar una carga** podés cambiar los minutos y la "
+                    "nota, o borrarla. En *Mis cargas* ves lo del día (con el total) o el mes día por día.")
 
 
 def pantalla_protocolo():
