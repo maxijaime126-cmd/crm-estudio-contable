@@ -409,6 +409,31 @@ class TestResumenDiario(unittest.TestCase):
         self.assertEqual((fila5["Trabajo (hs)"], fila5["Disponible (hs)"], fila5["Total (hs)"]), (5.0, 1.0, 6.0))
 
 
+class TestEstadoDelDia(unittest.TestCase):
+    def test_quien_completo_el_dia(self):
+        reg = registros([
+            ("2026-10-05", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 300),
+            ("2026-10-05", "Natalia", "GENERAL", "Disponible", "", 60),                 # completo
+            ("2026-10-05", "Athina", "IMPUESTOS", "IVA mensual", "Control", 120),       # faltan 4
+            ("2026-10-05", "Johana", "GENERAL", "Ausencias", "Vacaciones", 360),        # ausente todo el día
+        ])
+        hp = {"Natalia": 6.0, "Athina": 6.0, "Maximiliano": 6.0, "Johana": 6.0}
+        t = calc.estado_dia(reg, date(2026, 10, 5), hp, FER)
+        est = dict(zip(t["Persona"], t["Estado"]))
+        self.assertEqual(est["Natalia"], "✅ completo")
+        self.assertEqual(est["Athina"], "⚠️ faltan 4,0 hs")
+        self.assertEqual(est["Maximiliano"], "❌ sin carga")
+        self.assertEqual(est["Johana"], "✅ completo")                    # la vacación cuenta como día cubierto
+        self.assertEqual(int(t["Estado"].str.startswith("✅").sum()), 2)
+
+    def test_dia_no_habil(self):
+        reg = registros([("2026-10-12", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 60)])
+        t = calc.estado_dia(reg, date(2026, 10, 12), {"Natalia": 6.0, "Athina": 6.0}, FER)
+        est = dict(zip(t["Persona"], t["Estado"]))
+        self.assertEqual(est["Natalia"], "⏱️ día no hábil: cuenta como extra")
+        self.assertEqual(est["Athina"], "— día no hábil")
+
+
 class FakeWS:
     def __init__(self, title, ids):
         self.title, self.rows, self.col_count, self.id = title, [], 6, next(ids)
