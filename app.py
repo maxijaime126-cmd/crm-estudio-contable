@@ -586,6 +586,11 @@ def tab_equipo(ctx, anio, mes):
               f"Informe_equipo_{anio}-{mes:02d}.pdf")
 
 
+DIAS_LARGO = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+ESCALA_CARGA = [[0, "#d8f3dc"], [0.5, "#ffe8a3"], [1, "#e63946"]]
+GRIS_SIN_DATOS = "#E3E7EC"
+
+
 def tab_calendario(ctx, anio, mes, hoy):
     reg, feriados, cat = ctx["reg"], ctx["feriados"], ctx["cat"]
     horas_pp = calc.horas_por_persona(ctx["personas"])
@@ -594,22 +599,51 @@ def tab_calendario(ctx, anio, mes, hoy):
     if horas.to_numpy().sum() == 0:
         st.info("Todavía no hay horas de trabajo cargadas en este mes.")
         return
-    st.caption("Cada fila es un departamento. El color compara los días de ese mismo departamento "
-               "(rojo = su día de mayor carga). Los números son las horas de trabajo cargadas.")
-    dias = [d for d in horas.columns if calc.es_habil(d, feriados) or horas[d].sum() > 0]
-    z, texto = [], []
-    for dep in horas.index:
-        vals = [float(horas.loc[dep, d]) for d in dias]
-        mx = max(vals) if vals else 0
-        z.append([(v / mx * 100 if mx > 0 else None) for v in vals])
-        texto.append([f"{v:.1f}" if v > 0 else "" for v in vals])
-    fig = go.Figure(go.Heatmap(
-        z=z, x=[f"{DIAS_ES[d.weekday()]} {d:%d/%m}" for d in dias], y=[etiqueta_depto(d) for d in horas.index],
-        text=texto, texttemplate="%{text}", zmin=0, zmax=100, colorbar=dict(title="% del pico"),
-        colorscale=[[0, "#d8f3dc"], [0.5, "#ffe8a3"], [1, "#e63946"]]))
-    fig.update_yaxes(autorange="reversed")
-    fig.update_xaxes(type="category", tickangle=-60)
-    st.plotly_chart(estilo_fig(fig, max(320, 42 * len(horas.index) + 140)))
+    con_datos = calc.dias_con_datos(reg, anio, mes)
+
+    o1, o2 = st.columns(2)
+    modo_txt = o1.radio("Colorear según", ["Capacidad del equipo", "Pico de cada departamento"], key="cal_modo")
+    vista = o2.radio("Vista", ["Mes completo", "Calendario de un departamento"], key="cal_vista")
+    modo = "equipo" if modo_txt.startswith("Capacidad") else "pico"
+    if modo == "equipo":
+        st.caption("El color muestra qué parte de la capacidad del equipo de ese día se usó en el departamento "
+                   "(rojo = el equipo entero ocupado en ese departamento). **Gris = nadie cargó horas ese día**: "
+                   "no se sabe si estuvo libre o si faltó cargar.")
+        titulo = "% de la capacidad del equipo"
+    else:
+        st.caption("El color compara los días de un mismo departamento (rojo = su día de mayor carga del mes). "
+                   "Sirve para ver los días fuertes de un departamento chico. Gris = sin datos.")
+        titulo = "% del día pico"
+
+    if vista == "Mes completo":
+        z, texto = calc.calendario_z(horas, cap, con_datos, modo)
+        dias = [d for d in z.columns if calc.es_habil(d, feriados) or horas[d].sum() > 0]
+        filas = [("👥 " + calc.TOTAL_EQUIPO) if i == calc.TOTAL_EQUIPO else etiqueta_depto(i) for i in z.index]
+        fig = go.Figure(go.Heatmap(
+            z=z[dias].values.tolist(), x=[f"{DIAS_ES[d.weekday()]} {d:%d/%m}" for d in dias], y=filas,
+            text=texto[dias].values.tolist(), texttemplate="%{text}", zmin=0, zmax=100,
+            colorscale=ESCALA_CARGA, colorbar=dict(title=titulo), hoverongaps=False, xgap=2, ygap=2))
+        fig.update_yaxes(autorange="reversed")
+        fig.update_xaxes(type="category", tickangle=-60)
+        estilo_fig(fig, max(340, 42 * len(filas) + 150))
+        fig.update_layout(plot_bgcolor=GRIS_SIN_DATOS)
+        st.plotly_chart(fig)
+    else:
+        dep = st.selectbox("Departamento", deptos, format_func=etiqueta_depto, key="cal_dep")
+        semanas, z, texto = calc.grilla_calendario(horas.loc[dep], cap, con_datos, feriados, anio, mes, modo)
+        fin_de_semana = sum(float(horas.loc[dep, d]) for d in horas.columns if d.weekday() >= 5) > 0
+        n = 7 if fin_de_semana else 5
+        fig = go.Figure(go.Heatmap(
+            z=[f[:n] for f in z], x=DIAS_LARGO[:n], y=semanas, text=[f[:n] for f in texto],
+            texttemplate="%{text}", textfont=dict(size=14), zmin=0, zmax=100, colorscale=ESCALA_CARGA,
+            colorbar=dict(title=titulo), hoverongaps=False, xgap=3, ygap=3))
+        fig.update_yaxes(autorange="reversed")
+        fig.update_xaxes(side="top")
+        estilo_fig(fig, max(280, 100 * len(semanas) + 90))
+        fig.update_layout(plot_bgcolor=GRIS_SIN_DATOS, margin=dict(l=0, r=0, t=60, b=0))
+        st.plotly_chart(fig)
+        st.caption(f"{etiqueta_depto(dep)}: {fmt_hs(float(horas.loc[dep].sum()))} hs de trabajo en "
+                   f"{C.MESES_ES[mes]} {anio}.")
 
     seccion("Días de mayor carga por departamento")
     picos = calc.top_dias_pico(horas, cap, 3)
@@ -621,7 +655,13 @@ def tab_calendario(ctx, anio, mes, hoy):
     ini, fin = calc.rango_mes(anio, mes)
     dia = st.date_input("Día", value=min(max(hoy, ini), fin), min_value=ini, max_value=fin,
                         format="DD/MM/YYYY", key="cal_dia")
-    st.dataframe(calc.quien_puede_ayudar(reg, dia, horas_pp, feriados), hide_index=True)
+    ayuda = calc.quien_puede_ayudar(reg, dia, horas_pp, feriados)
+    if not ayuda.empty and (ayuda["Estado"] == "con carga").sum() == 0:
+        st.info("Nadie cargó horas ese día (o no es un día hábil): no se puede saber quién tenía margen.")
+    else:
+        st.caption("Margen = capacidad del día − trabajo cargado. Si alguien no cargó nada ese día figura "
+                   "«sin carga»: no se asume que estaba libre.")
+        st.dataframe(ayuda, hide_index=True)
 
 
 def tab_semanal(ctx, anio, mes):
@@ -696,8 +736,9 @@ Los minutos van de a 5, con un mínimo de 10. Para repartir un trabajo en varios
 """)
     with st.expander("🛠️ Para el Admin: calendario y vista semanal"):
         st.markdown("""
-- **Calendario:** una fila por departamento y una columna por día. Muestra los días más cargados de cada uno y quién
-  puede ayudar un día puntual.
+- **Calendario:** una fila por departamento y una columna por día, con una fila *Total equipo*. Se puede colorear según la
+  capacidad del equipo o según el pico de cada departamento, y ver un calendario de semanas de un departamento.
+  El gris significa que nadie cargó horas ese día. Abajo, los días más cargados y quién puede ayudar un día puntual.
 - **Semanal:** cuánto trabajo cae cada semana por departamento y cuántas horas libres tenía el equipo
   (capacidad − trabajo). Sirve para saber si un departamento puede absorber un pico o si conviene sumar gente.
 - **Importante:** estos números solo sirven si todos cargan sus 6 horas todos los días (con *Disponible* cuando
