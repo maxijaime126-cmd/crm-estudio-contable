@@ -37,6 +37,9 @@ TIPO_DISPONIBLE = "Disponible"  # tiempo libre ("Disponible" y "Gestión y mejor
 TIPO_AUSENCIA = "Ausencia"      # baja la capacidad (inasistencia, vacaciones)
 
 TAREA_AUSENCIAS = "Ausencias"
+TAREA_DISPONIBLE = "Disponible"
+# Disponible y Ausencias no pertenecen a un departamento: se guardan con este nombre
+DEPTO_GENERAL = "GENERAL"
 SUBTAREA_NOTA_OBLIGATORIA = "Otros imprevistos"
 
 # --- Personas iniciales (después se editan en la hoja Personas) ---
@@ -59,6 +62,7 @@ COLORES_DEPTO = {
 }
 
 ICONOS_DEPTO = {
+    "GENERAL": "🟦",
     "SUELDOS": "💰", "GERENCIAL": "🧭", "TRÁMITES": "⚖️", "IMPUESTOS": "🧾", "CONTABILIDAD": "📒",
     "ATENCIÓN AL CLIENTE": "📞", "RECURSOS HUMANOS": "🧑‍🤝‍🧑", "DOCUMENTACIÓN": "📄", "COOPERATIVA": "🤝",
 }
