@@ -36,6 +36,10 @@ ESQUEMA = {
 # Hojas que se completan con datos iniciales si están vacías
 SEMBRAR_SI_VACIA = (HOJA_CATALOGO, HOJA_PERSONAS, HOJA_FERIADOS)
 
+# --- Cuándo un día del equipo se considera cargado (trabajo / capacidad del equipo) ---
+UMBRAL_ALTO = 60        # desde este % la carga se considera alta
+UMBRAL_SATURADO = 85    # desde este % (o con 1 hora extra o más del equipo) el día se considera saturado
+
 # --- Tipos de tarea (columna Tipo del catálogo) ---
 TIPO_TRABAJO = "Trabajo"        # suma a la demanda
 TIPO_DISPONIBLE = "Disponible"  # tiempo libre ("Disponible" y "Gestión y mejoras")
@@ -43,6 +47,7 @@ TIPO_AUSENCIA = "Ausencia"      # baja la capacidad (inasistencia, vacaciones)
 
 TAREA_AUSENCIAS = "Ausencias"
 TAREA_DISPONIBLE = "Disponible"
+TAREA_GESTION = "Gestión y mejoras del departamento"
 # Disponible y Ausencias no pertenecen a un departamento: se guardan con este nombre
 DEPTO_GENERAL = "GENERAL"
 SUBTAREA_NOTA_OBLIGATORIA = "Otros imprevistos"
