@@ -157,8 +157,11 @@ def por_dia(reg_p: pd.DataFrame, horas_dia: float, feriados: set,
 
 
 def resumen_persona_mes(reg: pd.DataFrame, persona: str, anio: int, mes: int,
-                        horas_dia: float, feriados: set) -> dict:
+                        horas_dia: float, feriados: set, hasta: date | None = None) -> dict:
+    """'hasta' (opcional) corta el mes en ese día: sirve para medir un mes en curso sin contar los días que faltan."""
     ini, fin = rango_mes(anio, mes)
+    if hasta is not None:
+        fin = min(fin, hasta)
     rp = reg[(reg["Persona"] == persona)]
     rp = rp[(rp["Fecha"].dt.date >= ini) & (rp["Fecha"].dt.date <= fin)]
     d = por_dia(rp, horas_dia, feriados, ini, fin)
@@ -316,20 +319,24 @@ def semanas_del_mes(anio: int, mes: int) -> list[tuple[str, date, date]]:
 
 
 def semanal_departamentos(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict,
-                          feriados: set, departamentos: list[str]):
+                          feriados: set, departamentos: list[str], solo_con_datos: bool = True):
     """Devuelve (horas, resumen):
     - horas: departamento x semana, horas de TRABAJO.
     - resumen: por semana, capacidad del equipo, trabajo total, horas libres y ocupación %.
-    Libre = capacidad del equipo - trabajo total (lo que el equipo podría absorber sin extras)."""
+    Libre = capacidad del equipo - trabajo total (lo que el equipo podría absorber sin extras).
+    Con solo_con_datos (por defecto) la capacidad cuenta únicamente los días en que alguien cargó horas:
+    así las semanas que todavía no pasaron no aparecen como 'libres'."""
     horas_d, cap_d = matriz_departamentos(reg, anio, mes, horas_personas, feriados, departamentos)
     semanas = semanas_del_mes(anio, mes)
+    con_datos = dias_con_datos(reg, anio, mes)
     etiquetas = [s[0] for s in semanas]
     h = pd.DataFrame(0.0, index=horas_d.index, columns=etiquetas)
     capacidad = pd.Series(0.0, index=etiquetas)
     for etiqueta, a, b in semanas:
         cols = [d for d in horas_d.columns if a <= d <= b]
         h[etiqueta] = horas_d[cols].sum(axis=1)
-        capacidad[etiqueta] = float(cap_d[cols].sum())
+        cols_cap = [d for d in cols if d in con_datos] if solo_con_datos else cols
+        capacidad[etiqueta] = float(cap_d[cols_cap].sum())
     total = h.sum(axis=0)
     libre = (capacidad - total).clip(lower=0)
     ocup = (total / capacidad * 100).where(capacidad > 0)
@@ -571,18 +578,22 @@ def _hd_prom(horas_personas: dict) -> float:
 
 
 def resumen_departamentos_mes(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict,
-                              feriados: set, departamentos: list[str]) -> pd.DataFrame:
+                              feriados: set, departamentos: list[str], hasta: date | None = None) -> pd.DataFrame:
     """Horas de trabajo de cada departamento en el mes, su peso, y la comparación con el mes anterior.
     'Personas equivalentes' = horas / (días hábiles x horas por día): cuántas personas a tiempo
-    completo hicieron falta en el mes."""
+    completo hicieron falta. Con 'hasta' el mes se corta en ese día y el mes anterior se compara en el
+    mismo tramo (del día 1 al mismo número de día), para no comparar un mes a medias contra uno completo."""
+    ini, fin = rango_mes(anio, mes)
+    tope = min(fin, hasta) if hasta is not None else fin
     horas, cap = matriz_departamentos(reg, anio, mes, horas_personas, feriados, departamentos)
     a2, m2 = meses_atras(anio, mes, 2)[0]
     previas, _ = matriz_departamentos(reg, a2, m2, horas_personas, feriados, departamentos)
-    total = horas.sum(axis=1)
-    prev = previas.sum(axis=1).reindex(total.index).fillna(0.0)
-    ini, fin = rango_mes(anio, mes)
-    dias_hab = len(dias_habiles(ini, fin, feriados))
-    cap_mes, trabajo_total = float(cap.sum()), float(total.sum())
+    cols = [d for d in horas.columns if d <= tope]
+    cols_prev = [d for d in previas.columns if (d.day <= tope.day if tope < fin else True)]
+    total = horas[cols].sum(axis=1)
+    prev = previas[cols_prev].sum(axis=1).reindex(total.index).fillna(0.0)
+    dias_hab = len(dias_habiles(ini, tope, feriados))
+    cap_mes, trabajo_total = float(cap[cols].sum()), float(total.sum())
     base_persona = dias_hab * _hd_prom(horas_personas)
     out = pd.DataFrame({
         "Departamento": total.index,
@@ -658,3 +669,148 @@ def puede_absorber(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict,
         "pct_capacidad": (horas_necesarias / (n_dias * cap_prom) * 100) if cap_prom > 0 else None,
         "alcanza": libre_ventana >= horas_necesarias, "faltan": max(0.0, horas_necesarias - libre_ventana),
     }
+
+
+# ----------------------------------------------------------------------------
+# Informe por departamento (para la reunión con el contador)
+# ----------------------------------------------------------------------------
+def kpis_equipo(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict, feriados: set,
+                hasta: date | None = None):
+    """(tabla por persona, totales del equipo)."""
+    filas = []
+    for p, hd in horas_personas.items():
+        r = resumen_persona_mes(reg, p, anio, mes, hd, feriados, hasta)
+        filas.append({"Persona": p, "Capacidad (hs)": r["capacidad"], "Trabajo (hs)": r["trabajo"],
+                      "Utilización %": r["utilizacion"], "Disponible (hs)": r["disponible"],
+                      "Ausencias (hs)": r["ausencia"], "Extra (hs)": r["extra"]})
+    tabla = pd.DataFrame(filas, columns=["Persona", "Capacidad (hs)", "Trabajo (hs)", "Utilización %",
+                                         "Disponible (hs)", "Ausencias (hs)", "Extra (hs)"])
+    tot = {k: round(float(tabla[c].sum()), 1) for k, c in
+           [("capacidad", "Capacidad (hs)"), ("trabajo", "Trabajo (hs)"), ("disponible", "Disponible (hs)"),
+            ("ausencia", "Ausencias (hs)"), ("extra", "Extra (hs)")]}
+    tot["utilizacion"] = round(tot["trabajo"] / tot["capacidad"] * 100, 1) if tot["capacidad"] > 0 else 0.0
+    tot["disponibilidad"] = round(tot["disponible"] / tot["capacidad"] * 100, 1) if tot["capacidad"] > 0 else 0.0
+    return tabla, tot
+
+
+def ocupacion_diaria_equipo(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict,
+                            feriados: set, departamentos: list[str]) -> pd.DataFrame:
+    """Un día por fila (solo días con carga): capacidad y trabajo del equipo, ocupación %, extra y estado.
+    Saturado = ocupación >= UMBRAL_SATURADO o 1 hora extra o más del equipo; Alto = >= UMBRAL_ALTO."""
+    horas, cap = matriz_departamentos(reg, anio, mes, horas_personas, feriados, departamentos)
+    con_datos = dias_con_datos(reg, anio, mes)
+    ini, fin = rango_mes(anio, mes)
+    extra = {d: 0.0 for d in horas.columns}
+    for persona, hd in horas_personas.items():
+        det = por_dia(reg[reg["Persona"] == persona], hd, feriados, ini, fin)
+        for dia, v in det["Extra"].items():
+            extra[dia.date()] += float(v)
+    filas = []
+    for dia in horas.columns:
+        trabajo = float(horas[dia].sum())
+        if dia not in con_datos or (not es_habil(dia, feriados) and trabajo == 0):
+            continue
+        c = float(cap[dia])
+        ocup = trabajo / c * 100 if c > 0 else (100.0 if trabajo > 0 else 0.0)
+        estado = ("Saturado" if (ocup >= C.UMBRAL_SATURADO or extra[dia] >= 1.0)
+                  else "Alto" if ocup >= C.UMBRAL_ALTO else "Con margen")
+        filas.append({"Fecha": dia, "Capacidad (hs)": round(c, 1), "Trabajo (hs)": round(trabajo, 1),
+                      "Libre (hs)": round(max(0.0, c - trabajo), 1), "Ocupación %": round(ocup, 0),
+                      "Extra (hs)": round(extra[dia], 1),
+                      "Departamento principal": str(horas[dia].idxmax()) if trabajo > 0 else "",
+                      "Estado": estado})
+    return pd.DataFrame(filas, columns=["Fecha", "Capacidad (hs)", "Trabajo (hs)", "Libre (hs)", "Ocupación %",
+                                        "Extra (hs)", "Departamento principal", "Estado"])
+
+
+def cobertura_carga(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict, feriados: set,
+                    hoy: date) -> tuple[int, int]:
+    """(días-persona completos, días-persona hábiles) hasta ayer. Mide qué tan confiable es el informe."""
+    ini, fin = rango_mes(anio, mes)
+    tope = min(fin, hoy - timedelta(days=1))
+    if tope < ini:
+        return 0, 0
+    completos = total = 0
+    for p, hd in horas_personas.items():
+        d = por_dia(reg[reg["Persona"] == p], hd, feriados, ini, tope)
+        for dia, r in d.iterrows():
+            if not es_habil(dia.date(), feriados):
+                continue
+            total += 1
+            if round(float(r[C.TIPO_TRABAJO] + r[C.TIPO_DISPONIBLE] + r[C.TIPO_AUSENCIA]) * 60) >= hd * 60 - 2:
+                completos += 1
+    return completos, total
+
+
+def tiempo_libre_mes(reg: pd.DataFrame, anio: int, mes: int) -> dict:
+    """Horas disponibles del mes: 'Disponible' puro y 'Gestión y mejoras' por departamento."""
+    rm = del_mes(reg[reg["Tipo"] == C.TIPO_DISPONIBLE], anio, mes)
+    puro = float(rm[rm["Tarea"] == C.TAREA_DISPONIBLE]["Horas"].sum())
+    gest = rm[rm["Tarea"] == C.TAREA_GESTION].groupby("Departamento")["Horas"].sum()
+    gest = gest.round(1).reset_index().sort_values("Horas", ascending=False)
+    return {"disponible": round(puro, 1), "gestion": gest, "gestion_total": round(float(gest["Horas"].sum()), 1)}
+
+
+def informe_departamentos(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict, feriados: set,
+                          departamentos: list[str], hoy: date, n_dias: int = 4) -> dict:
+    """Todo lo que lleva el informe para el contador, más 'hallazgos' ya redactados."""
+    ini_m, fin_m = rango_mes(anio, mes)
+    con_datos = dias_con_datos(reg, anio, mes)
+    ultimo = max(con_datos) if con_datos else None          # los números llegan hasta el último día con datos
+    parcial = ultimo is not None and ultimo < fin_m
+    personas, tot = kpis_equipo(reg, anio, mes, horas_personas, feriados, ultimo)
+    res = resumen_departamentos_mes(reg, anio, mes, horas_personas, feriados, departamentos, ultimo)
+    sem_h, sem_res = semanal_departamentos(reg, anio, mes, horas_personas, feriados, departamentos)
+    dias = ocupacion_diaria_equipo(reg, anio, mes, horas_personas, feriados, departamentos)
+    ventanas = ventanas_pico(reg, anio, mes, horas_personas, feriados, departamentos, n_dias)
+    horas_d, cap_d = matriz_departamentos(reg, anio, mes, horas_personas, feriados, departamentos)
+    picos = top_dias_pico(horas_d, cap_d, 3)
+    libre = tiempo_libre_mes(reg, anio, mes)
+    completos, total_dp = cobertura_carga(reg, anio, mes, horas_personas, feriados, hoy)
+
+    h = []
+    if parcial:
+        h.append(f"El mes está en curso: los números llegan hasta el {ultimo:%d/%m}. La comparación con el mes anterior "
+                 f"se hace en el mismo tramo (días 1 a {ultimo.day}).")
+    if total_dp > 0 and completos / total_dp < 0.9:
+        h.append(f"Atención con los datos: solo {completos} de {total_dp} días-persona hábiles quedaron completos "
+                 f"({completos / total_dp * 100:.0f}%). Las horas pueden estar subestimadas.")
+    activos = res[res["Horas"] > 0]
+    if not activos.empty:
+        t = activos.iloc[0]
+        h.append(f"El departamento con más horas fue {t['Departamento']}: {_hs(t['Horas'])} hs "
+                 f"({_hs(t['% del trabajo'])}% del trabajo del equipo).")
+        con_base = activos[(activos["Mes anterior (hs)"] >= 5) & activos["Variación %"].notna()]
+        if not con_base.empty:
+            sube = con_base.loc[con_base["Variación %"].idxmax()]
+            baja = con_base.loc[con_base["Variación %"].idxmin()]
+            if sube["Variación %"] >= 20:
+                h.append(f"Mayor suba contra el mes anterior: {sube['Departamento']} (+{sube['Variación %']:.0f}%, de "
+                         f"{_hs(sube['Mes anterior (hs)'])} a {_hs(sube['Horas'])} hs).")
+            if baja["Variación %"] <= -20:
+                h.append(f"Mayor baja contra el mes anterior: {baja['Departamento']} ({baja['Variación %']:.0f}%, de "
+                         f"{_hs(baja['Mes anterior (hs)'])} a {_hs(baja['Horas'])} hs).")
+    if tot["capacidad"] > 0:
+        h.append(f"El equipo trabajó {_hs(tot['trabajo'])} hs de {_hs(tot['capacidad'])} de capacidad "
+                 f"({tot['utilizacion']:.0f}%) y tuvo {_hs(tot['disponible'])} hs disponibles ({tot['disponibilidad']:.0f}%).")
+    if not dias.empty:
+        d = dias.loc[dias["Ocupación %"].idxmax()]
+        h.append(f"El día de mayor carga del equipo fue el {d['Fecha']:%d/%m}: {d['Ocupación %']:.0f}% de la capacidad "
+                 f"({_hs(d['Trabajo (hs)'])} de {_hs(d['Capacidad (hs)'])} hs), sobre todo en {d['Departamento principal']}.")
+        n_sat = int((dias["Estado"] == "Saturado").sum())
+        n_alto = int((dias["Estado"] == "Alto").sum())
+        h.append(f"De {len(dias)} {'día' if len(dias) == 1 else 'días'} con carga, {n_sat} "
+                 f"{'fue saturado' if n_sat == 1 else 'fueron saturados'} (desde {C.UMBRAL_SATURADO}% de la capacidad "
+                 f"o con 1 hora extra o más), {n_alto} de carga alta (desde {C.UMBRAL_ALTO}%) y "
+                 f"{len(dias) - n_sat - n_alto} con margen.")
+    if tot["extra"] > 0:
+        h.append(f"Hubo {_hs(tot['extra'])} hs extra en el mes.")
+    if not ventanas.empty:
+        pasan = ventanas[ventanas["Lectura"].str.contains("Necesita ayuda|No alcanza")]
+        h.append((f"En una ventana de {n_dias} días hábiles, {', '.join(pasan['Departamento'])} "
+                  f"{'superó' if len(pasan) == 1 else 'superaron'} lo que hace una persona (ver tabla de picos).")
+                 if not pasan.empty else
+                 f"Ningún departamento superó lo que hace una persona en una ventana de {n_dias} días hábiles.")
+    return {"anio": anio, "mes": mes, "n_dias": n_dias, "ultimo_dia": ultimo, "parcial": parcial, "personas": personas, "totales": tot, "departamentos": res,
+            "semanal_horas": sem_h, "semanal": sem_res, "dias": dias, "ventanas": ventanas, "picos": picos,
+            "tiempo_libre": libre, "cobertura": (completos, total_dp), "hallazgos": h}
