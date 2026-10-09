@@ -434,6 +434,50 @@ class TestEstadoDelDia(unittest.TestCase):
         self.assertEqual(est["Athina"], "— día no hábil")
 
 
+class TestCompletarYPendientes(unittest.TestCase):
+    def test_registro_disponible_completa_el_dia(self):
+        reg = registros([("2026-10-05", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 240)])   # 4 hs
+        faltan = 360 - 240
+        fila = calc.registro_disponible("Natalia", date(2026, 10, 5), faltan)
+        self.assertEqual((fila["Departamento"], fila["Tarea"], fila["Minutos"]), ("GENERAL", "Disponible", 120))
+        nuevo = pd.DataFrame([{**fila, "ID": "x", "Registrado": ""}])
+        reg2 = calc.preparar_registros(pd.concat([
+            pd.DataFrame([{"ID": "a", "Fecha": "2026-10-05", "Persona": "Natalia", "Departamento": "IMPUESTOS",
+                           "Tarea": "IVA mensual", "Subtarea": "Control", "Minutos": "240", "Nota": "",
+                           "Registrado": ""}]), nuevo]), catalogo())
+        t = calc.estado_dia(reg2, date(2026, 10, 5), {"Natalia": 6.0}, FER)
+        self.assertEqual(t.iloc[0]["Estado"], "✅ completo")
+        self.assertEqual(reg2[reg2.Tipo == C.TIPO_DISPONIBLE]["Horas"].sum(), 2)
+
+    def test_dias_pendientes(self):
+        reg = registros([
+            ("2026-10-01", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360),     # completo
+            ("2026-10-02", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 240),     # faltan 2 hs
+            ("2026-10-05", "Natalia", "GENERAL", "Ausencias", "Vacaciones", 360),      # cubierto
+            ("2026-10-06", "Athina", "IMPUESTOS", "IVA mensual", "Control", 60),       # de otra persona
+        ])
+        p = calc.dias_pendientes(reg, "Natalia", 6.0, FER, date(2026, 10, 9))
+        self.assertEqual(p, [(date(2026, 10, 2), 120), (date(2026, 10, 6), 360),
+                             (date(2026, 10, 7), 360), (date(2026, 10, 8), 360)])
+
+    def test_pendientes_no_mira_antes_del_inicio_ni_hoy_ni_fines_de_semana(self):
+        reg = registros([("2026-10-05", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360)])
+        p = calc.dias_pendientes(reg, "Natalia", 6.0, FER, date(2026, 10, 14), inicio=date(2026, 10, 5))
+        dias = [d for d, _ in p]
+        self.assertNotIn(date(2026, 10, 2), dias)                        # antes de la fecha de inicio
+        self.assertNotIn(date(2026, 10, 10), dias)                       # sábado
+        self.assertNotIn(date(2026, 10, 12), dias)                       # feriado
+        self.assertNotIn(date(2026, 10, 14), dias)                       # hoy todavía se puede cargar
+        self.assertIn(date(2026, 10, 13), dias)
+
+    def test_pendientes_sin_datos_reclama_desde_el_inicio(self):
+        p = calc.dias_pendientes(registros([]), "Natalia", 6.0, FER, date(2026, 10, 9))
+        self.assertEqual([d for d, _ in p], [date(2026, 10, 1), date(2026, 10, 2), date(2026, 10, 5),
+                                              date(2026, 10, 6), date(2026, 10, 7), date(2026, 10, 8)])
+        self.assertTrue(all(m == 360 for _, m in p))
+        self.assertEqual(calc.dias_pendientes(registros([]), "Natalia", 6.0, FER, date(2026, 10, 1)), [])
+
+
 class FakeWS:
     def __init__(self, title, ids):
         self.title, self.rows, self.col_count, self.id = title, [], 6, next(ids)
