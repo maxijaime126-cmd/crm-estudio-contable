@@ -587,11 +587,13 @@ def pantalla_resumen(ctx: dict, usuario: str, es_admin: bool):
     mes = f2.selectbox("Mes", list(range(1, 13)), index=hoy.month - 1, format_func=lambda m: C.MESES_ES[m])
 
     if es_admin:
-        t1, t2, t3, t4 = st.tabs(["👤 Individual", "🌐 Equipo", "🗓️ Calendario", "📆 Semanal"])
+        t1, t2, t5, t3, t4 = st.tabs(["👤 Individual", "🌐 Equipo", "🏢 Departamentos", "🗓️ Calendario", "📆 Semanal"])
         with t1:
             tab_individual(ctx, None, anio, mes, hoy, es_admin)
         with t2:
             tab_equipo(ctx, anio, mes)
+        with t5:
+            tab_departamentos(ctx, anio, mes)
         with t3:
             tab_calendario(ctx, anio, mes, hoy)
         with t4:
@@ -769,6 +771,74 @@ ESCALA_CARGA = [[0, "#d8f3dc"], [0.5, "#ffe8a3"], [1, "#e63946"]]
 GRIS_SIN_DATOS = "#E3E7EC"
 
 
+def tab_departamentos(ctx, anio, mes):
+    """Cuántas horas consume cada departamento, sus picos y si el equipo puede absorberlos."""
+    reg, feriados, cat = ctx["reg"], ctx["feriados"], ctx["cat"]
+    horas_pp = calc.horas_por_persona(ctx["personas"])
+    deptos = list(dict.fromkeys(cat["Departamento"]))
+    if not horas_pp:
+        st.warning("No hay operarios activos en la hoja Personas.")
+        return
+    res = calc.resumen_departamentos_mes(reg, anio, mes, horas_pp, feriados, deptos)
+    if res["Horas"].sum() == 0:
+        st.info("Todavía no hay horas de trabajo cargadas en este mes.")
+        return
+    periodo = f"{C.MESES_ES[mes]} {anio}"
+
+    seccion(f"Horas de trabajo por departamento — {periodo}")
+    top = res.iloc[0]
+    kpis([(fmt_hs(float(res["Horas"].sum())), "Trabajo del equipo (hs)", "k-trab"),
+          (f"{fmt_hs(float(top['Horas']))} hs", f"Más cargado: {top['Departamento']}", "k-cap"),
+          (f"{float(res['% de la capacidad del equipo'].sum()):.0f}%", "De la capacidad del equipo", "k-util")])
+    graf = res[res["Horas"] > 0].sort_values("Horas")
+    fig = px.bar(graf, x="Horas", y="Departamento", orientation="h", color="Departamento",
+                 color_discrete_map=C.COLORES_DEPTO, text=graf["Horas"].round(1))
+    fig.update_layout(showlegend=False, yaxis_title=None)
+    st.plotly_chart(estilo_fig(fig, max(260, 40 * len(graf) + 80)))
+    st.caption("**Personas equivalentes** = horas del mes ÷ (días hábiles × horas por día): cuántas personas a tiempo "
+               "completo hicieron falta para ese departamento en el mes.")
+    tabla = res[(res["Horas"] > 0) | (res["Mes anterior (hs)"] > 0)].copy()
+    st.dataframe(tabla, hide_index=True)
+
+    seccion("Ventana más cargada de cada departamento")
+    n = st.radio("Ventana de", [3, 4, 5], index=1, horizontal=True, key="vent_n",
+                 format_func=lambda x: f"{x} días hábiles seguidos")
+    v = calc.ventanas_pico(reg, anio, mes, horas_pp, feriados, deptos, n)
+    if v.empty:
+        st.info(f"Todavía no hay {n} días hábiles seguidos con horas cargadas en este mes.")
+    else:
+        st.caption(f"Los {n} días hábiles seguidos de mayor carga de cada departamento. **Una persona alcanza** = lo que "
+                   f"una sola persona puede hacer en esos días ({n} × 6 hs). **Libre del equipo** = capacidad de todos − "
+                   "trabajo de todos en esos días. Solo se miran ventanas donde se cargó todos los días.")
+        vv = v.copy()
+        vv["Desde"] = vv["Desde"].map(lambda d: f"{DIAS_ES[d.weekday()]} {d:%d/%m}")
+        vv["Hasta"] = vv["Hasta"].map(lambda d: f"{DIAS_ES[d.weekday()]} {d:%d/%m}")
+        st.dataframe(vv, hide_index=True)
+
+    seccion("🧮 ¿Podemos absorber un pico?")
+    st.caption(f"Por ejemplo: «un departamento necesita 20 horas en 4 días». Se compara con las horas libres que tuvo "
+               f"el equipo en {periodo} (promedio por día hábil con datos).")
+    c1, c2 = st.columns(2)
+    horas_nec = c1.number_input("Horas que necesita el departamento", min_value=1, max_value=500, value=20, step=1,
+                                key="abs_horas")
+    dias_nec = c2.number_input("En cuántos días hábiles", min_value=1, max_value=20, value=4, step=1, key="abs_dias")
+    r = calc.puede_absorber(reg, anio, mes, horas_pp, feriados, float(horas_nec), int(dias_nec))
+    if r is None:
+        st.info("Todavía no hay días con horas cargadas en este mes para usar como referencia.")
+        return
+    pct = f" · {r['pct_capacidad']:.0f}% de la capacidad del equipo" if r["pct_capacidad"] is not None else ""
+    st.markdown(
+        f'<div class="obj-box">🧮 <b>{horas_nec} hs en {dias_nec} días</b> = {r["personas_equivalentes"]:.2f} personas '
+        f'equivalentes{pct}<br>El equipo tuvo en promedio <b>{fmt_hs(r["libre_por_dia"])} hs libres por día</b> '
+        f'→ en {dias_nec} días: <b>{fmt_hs(r["libre_ventana"])} hs</b> (referencia: {r["dias_usados"]} día(s) con datos)</div>',
+        unsafe_allow_html=True)
+    if r["alcanza"]:
+        st.success("✅ Entre todos se puede absorber: las horas libres alcanzan.")
+    else:
+        st.warning(f"⚠️ No alcanza solo con las horas libres: faltarían {fmt_hs(r['faltan'])} hs. Habría que "
+                   "redistribuir tareas, correr plazos o contar con horas extra.")
+
+
 def tab_calendario(ctx, anio, mes, hoy):
     reg, feriados, cat = ctx["reg"], ctx["feriados"], ctx["cat"]
     horas_pp = calc.horas_por_persona(ctx["personas"])
@@ -918,6 +988,8 @@ La duración se elige con un toque (10 min, 15, 30, 45, 1 h, 1 h 30, 2 h, 3 h, 4
 - **Calendario:** una fila por departamento y una columna por día, con una fila *Total equipo*. Se puede colorear según la
   capacidad del equipo o según el pico de cada departamento, y ver un calendario de semanas de un departamento.
   El gris significa que nadie cargó horas ese día. Abajo, los días más cargados y quién puede ayudar un día puntual.
+- **Departamentos:** cuántas horas consume cada departamento en el mes (contra el mes anterior), la ventana de 3, 4 o 5 días
+  más cargada de cada uno, y una calculadora: «20 horas en 4 días, ¿alcanza con las horas libres del equipo?».
 - **Quién completó el día:** arriba del Panel de control, el Admin ve quién cargó las horas del día (por defecto hoy).
 - **Semanal:** cuánto trabajo cae cada semana por departamento y cuántas horas libres tenía el equipo
   (capacidad − trabajo). Sirve para saber si un departamento puede absorber un pico o si conviene sumar gente.
