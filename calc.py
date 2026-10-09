@@ -529,3 +529,35 @@ def estado_dia(reg: pd.DataFrame, dia: date, horas_personas: dict, feriados: set
         filas.append({"Persona": persona, "Cargadas (hs)": round(total, 1),
                       "Corresponden (hs)": round(hd if hab else 0.0, 1), "Estado": estado})
     return pd.DataFrame(filas, columns=["Persona", "Cargadas (hs)", "Corresponden (hs)", "Estado"])
+
+
+# ----------------------------------------------------------------------------
+# Completar el día y días pendientes
+# ----------------------------------------------------------------------------
+def registro_disponible(persona: str, dia: date, minutos: int, nota: str = "Completar día") -> dict:
+    """Una carga de 'Disponible' (sin departamento) para completar las horas de un día."""
+    return {"Fecha": dia.isoformat(), "Persona": persona, "Departamento": C.DEPTO_GENERAL,
+            "Tarea": C.TAREA_DISPONIBLE, "Subtarea": "", "Minutos": int(minutos), "Nota": nota}
+
+
+def dias_pendientes(reg: pd.DataFrame, persona: str, horas_dia: float, feriados: set, hoy: date,
+                    dias_atras: int = 31, inicio: date = C.FECHA_INICIO) -> list[tuple]:
+    """Días hábiles ya pasados (hasta ayer) en que la persona no completó sus horas:
+    [(fecha, minutos que faltan)]. Mira hasta 'dias_atras' días hacia atrás y nunca antes de
+    'inicio' (config.FECHA_INICIO), para no reclamar días de antes de que el sistema se usara."""
+    desde = max(hoy - timedelta(days=dias_atras), inicio)
+    hasta = hoy - timedelta(days=1)
+    if hasta < desde:
+        return []
+    base = reg[reg["Persona"] == persona] if reg is not None and not reg.empty else pd.DataFrame(
+        columns=["Fecha", "Tipo", "Horas"])
+    d = por_dia(base, horas_dia, feriados, desde, hasta)
+    meta = horas_dia * 60
+    out = []
+    for dia, r in d.iterrows():
+        if not es_habil(dia.date(), feriados):
+            continue
+        minutos = round(float(r[C.TIPO_TRABAJO] + r[C.TIPO_DISPONIBLE] + r[C.TIPO_AUSENCIA]) * 60)
+        if minutos < meta - 2:
+            out.append((dia.date(), int(round(meta - minutos))))
+    return out
