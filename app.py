@@ -325,6 +325,7 @@ def pantalla_carga(ctx: dict, usuario: str, es_admin: bool):
 
     # --- Vista previa ---
     filas = []
+    resto = 0   # minutos que faltarían para completar el día, después de esta carga
     if hasta < desde:
         st.error("La fecha 'Hasta' no puede ser anterior a 'Desde'.")
     else:
@@ -338,13 +339,20 @@ def pantalla_carga(ctx: dict, usuario: str, es_admin: bool):
             total = sum(f["Minutos"] for f in filas) / 60
             st.info(f"Se van a cargar {len(filas)} días ({desde:%d/%m} al {hasta:%d/%m}): {fmt_hs(total)} hs en total.")
         if len(filas) == 1:
-            resumen_dia(reg, persona, desde, hd, feriados, filas[0]["Minutos"] / 60, tipo)
+            resto = resumen_dia(reg, persona, desde, hd, feriados, filas[0]["Minutos"] / 60, tipo)
+
+    completar = False
+    if tipo == C.TIPO_TRABAJO and len(filas) == 1 and resto >= C.PASO_MINUTOS:
+        st.caption(f"Si el resto del día estuvo libre, se cargarían {fmt_min(resto)} de Disponible.")
+        completar = st.checkbox("🟦 Completar el día con Disponible al guardar", key=f"c_compl_{ver}")
 
     if st.button("💾 Guardar", type="primary", disabled=not filas):
         if obligatoria and not nota.strip():
             st.error("Para «Otros imprevistos» la nota es obligatoria.")
         else:
             guardado, error = False, None
+            if completar and resto >= C.PASO_MINUTOS:
+                filas = filas + [calc.registro_disponible(persona, desde, resto)]
             try:
                 ahora = S.ahora_iso()
                 for f in filas:
@@ -388,6 +396,7 @@ def resumen_dia(reg, persona, dia, hd, feriados, nuevas_hs, tipo):
         extra = max(0.0, float(d[C.TIPO_TRABAJO]) + nuevas_hs - float(d["Capacidad"]))
         if extra > 0.03:
             st.warning(f"Con esta carga ese día quedan {fmt_hs(extra)} hs extra.")
+    return max(0, round((meta - total) * 60)) if meta > 0 else 0
 
 
 def tabla_cargas(df: pd.DataFrame, con_fecha: bool) -> pd.DataFrame:
@@ -404,6 +413,32 @@ def tabla_cargas(df: pd.DataFrame, con_fecha: bool) -> pd.DataFrame:
     return pd.concat([v, pd.DataFrame([fila])], ignore_index=True)
 
 
+def boton_completar(persona: str, dia: date, hd: float, feriados: set, hoy: date, total_min: int):
+    """Carga de una vez como Disponible las horas que faltan para completar el día."""
+    meta_min = hd * 60 if calc.es_habil(dia, feriados) else 0
+    faltan = round(meta_min - total_min)
+    if faltan < C.PASO_MINUTOS or dia > hoy:
+        return
+    if total_min == 0:
+        st.caption(f"Faltan {fmt_min(faltan)} (el día está sin cargas). Si estuviste libre todo el día, podés cargarlo de una vez.")
+    else:
+        st.caption(f"Faltan {fmt_min(faltan)} para completar el día. Si el resto estuvo libre, podés cargarlo de una vez.")
+    if st.button("🟦 Completar el día con Disponible", key=f"mc_compl_{persona}_{dia}"):
+        error = None
+        try:
+            fila = calc.registro_disponible(persona, dia, faltan)
+            fila.update({"ID": S.nuevo_id(), "Registrado": S.ahora_iso()})
+            get_store().agregar(C.HOJA_REGISTROS, [fila])
+            invalidar()
+        except Exception as e:  # noqa: BLE001
+            error = e
+        if error:
+            st.error(f"No se pudo guardar: {error}")
+        else:
+            st.session_state["msg_ok"] = f"✅ Se cargaron {fmt_min(faltan)} de Disponible el {dia:%d/%m/%Y}."
+            st.rerun()
+
+
 def seccion_mis_cargas(reg: pd.DataFrame, persona: str, hoy: date, hd: float, feriados: set, dia_ref: date,
                        cat: pd.DataFrame):
     st.divider()
@@ -415,6 +450,7 @@ def seccion_mis_cargas(reg: pd.DataFrame, persona: str, hoy: date, hd: float, fe
         mostradas = propias[propias["Fecha"].dt.date == dia].sort_values("Registrado")
         if mostradas.empty:
             st.caption(f"No hay cargas de {persona} el {dia:%d/%m/%Y}.")
+            boton_completar(persona, dia, hd, feriados, hoy, 0)
             return
         por_tipo = mostradas.groupby("Tipo")["Horas"].sum()
         total_min = int(mostradas["Minutos"].sum())
@@ -424,6 +460,7 @@ def seccion_mis_cargas(reg: pd.DataFrame, persona: str, hoy: date, hd: float, fe
             f'disponible {fmt_hs(float(por_tipo.get(C.TIPO_DISPONIBLE, 0)))} hs · '
             f'ausencia {fmt_hs(float(por_tipo.get(C.TIPO_AUSENCIA, 0)))} hs</div>', unsafe_allow_html=True)
         st.dataframe(tabla_cargas(mostradas, False), hide_index=True)
+        boton_completar(persona, dia, hd, feriados, hoy, total_min)
     else:
         anios = sorted({hoy.year, *propias["Fecha"].dt.year.astype(int).tolist()})
         f1, f2, _ = st.columns([1.3, 1.6, 2.5])
@@ -503,6 +540,21 @@ def editar_eliminar(mostradas: pd.DataFrame, cat: pd.DataFrame):
 # ============================================================================
 # Panel de control
 # ============================================================================
+def banner_pendientes(ctx: dict, usuario: str, hoy: date):
+    """Aviso para quien carga horas: días hábiles ya pasados que no completó."""
+    horas_pp = calc.horas_por_persona(ctx["personas"])
+    if usuario not in horas_pp:
+        return
+    meta = horas_pp[usuario] * 60
+    pend = calc.dias_pendientes(ctx["reg"], usuario, horas_pp[usuario], ctx["feriados"], hoy)
+    if not pend:
+        return
+    items = [f"{d:%d/%m} ({'sin carga' if m >= meta - 2 else 'faltan ' + fmt_min(m)})" for d, m in pend[:6]]
+    texto = (f"📅 Tenés {len(pend)} día(s) sin completar: " + ", ".join(items) + (" y más" if len(pend) > 6 else "")
+             + ". Cargalos desde «Cargar horas» (en «Mis cargas» podés completar un día con Disponible).")
+    alertas([texto])
+
+
 def bloque_estado_dia(ctx: dict, hoy: date):
     """Para el Admin: ¿quién completó las horas del día?"""
     horas_pp = calc.horas_por_persona(ctx["personas"])
@@ -847,6 +899,7 @@ La duración se elige con un toque (10 min, 15, 30, 45, 1 h, 1 h 30, 2 h, 3 h, 4
     with st.expander("🟦 Disponible, Ausencias y horas extra"):
         st.markdown("""
 - **Disponible:** cuando no estás haciendo nada. Elegí la opción 🟦 *Disponible* (no hace falta elegir departamento). Completa tus 6 horas del día.
+- **Completar el día:** al cargar trabajo podés tildar *Completar el día con Disponible al guardar*, o usar el botón en *Mis cargas → Del día*: carga de una vez las horas que faltan.
 - **Gestión y mejoras del departamento:** también cuenta como tiempo libre.
 - **Ausencias:** elegí 🏖️ *Ausencia* y después *Inasistencia* o *Vacaciones*. Bajan tu capacidad y no cuentan como trabajo. En vacaciones se cargan
   solo los días hábiles entre *Desde* y *Hasta*.
@@ -924,6 +977,8 @@ def main():
             st.rerun()
 
     hero(usuario, es_admin, hoy_ar())
+    if not es_admin and not pagina.startswith(("📚", "📜")):
+        banner_pendientes(ctx, usuario, hoy_ar())
     if pagina.startswith("➕"):
         pantalla_carga(ctx, usuario, es_admin)
     elif pagina.startswith("📊"):
