@@ -815,6 +815,14 @@ def tab_departamentos(ctx, anio, mes):
         vv["Hasta"] = vv["Hasta"].map(lambda d: f"{DIAS_ES[d.weekday()]} {d:%d/%m}")
         st.dataframe(vv, hide_index=True)
 
+    seccion("📄 Informe para la reunión con el contador")
+    st.caption("Un PDF con las horas por departamento, los días saturados, el tiempo disponible y lo más importante "
+               "del mes, listo para mostrar. Si el mes está en curso, los números llegan hasta el último día cargado.")
+    boton_pdf(f"cont_{anio}_{mes}_{n}", "📄 Preparar informe para el contador",
+              lambda: pdf.pdf_departamentos(calc.informe_departamentos(
+                  reg, anio, mes, horas_pp, feriados, deptos, hoy_ar(), n)),
+              f"Informe_departamentos_{anio}-{mes:02d}.pdf")
+
     seccion("🧮 ¿Podemos absorber un pico?")
     st.caption(f"Por ejemplo: «un departamento necesita 20 horas en 4 días». Se compara con las horas libres que tuvo "
                f"el equipo en {periodo} (promedio por día hábil con datos).")
@@ -921,7 +929,8 @@ def tab_semanal(ctx, anio, mes):
         st.info("Todavía no hay horas de trabajo cargadas en este mes.")
         return
     st.caption("Cuánto trabajo cae cada semana en cada departamento y cuánto podía absorber el equipo. "
-               "**Libre** = capacidad del equipo − trabajo total de la semana: lo que se podría absorber sin horas extra.")
+               "**Libre** = capacidad del equipo − trabajo total de la semana: lo que se podría absorber sin horas extra. "
+               "Solo se cuentan los días en que alguien cargó horas, así las semanas que todavía no pasaron no figuran como libres.")
     semanas = list(h.columns)
     fig = go.Figure()
     for dep in h.index:
@@ -989,7 +998,7 @@ La duración se elige con un toque (10 min, 15, 30, 45, 1 h, 1 h 30, 2 h, 3 h, 4
   capacidad del equipo o según el pico de cada departamento, y ver un calendario de semanas de un departamento.
   El gris significa que nadie cargó horas ese día. Abajo, los días más cargados y quién puede ayudar un día puntual.
 - **Departamentos:** cuántas horas consume cada departamento en el mes (contra el mes anterior), la ventana de 3, 4 o 5 días
-  más cargada de cada uno, y una calculadora: «20 horas en 4 días, ¿alcanza con las horas libres del equipo?».
+  más cargada de cada uno, un **PDF para la reunión con el contador** y una calculadora: «20 horas en 4 días, ¿alcanza con las horas libres del equipo?».
 - **Quién completó el día:** arriba del Panel de control, el Admin ve quién cargó las horas del día (por defecto hoy).
 - **Semanal:** cuánto trabajo cae cada semana por departamento y cuántas horas libres tenía el equipo
   (capacidad − trabajo). Sirve para saber si un departamento puede absorber un pico o si conviene sumar gente.
