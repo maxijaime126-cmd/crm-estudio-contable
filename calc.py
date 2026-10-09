@@ -561,3 +561,100 @@ def dias_pendientes(reg: pd.DataFrame, persona: str, horas_dia: float, feriados:
         if minutos < meta - 2:
             out.append((dia.date(), int(round(meta - minutos))))
     return out
+
+
+# ----------------------------------------------------------------------------
+# Carga por departamento: resumen del mes, ventanas pico y "¿podemos absorberlo?"
+# ----------------------------------------------------------------------------
+def _hd_prom(horas_personas: dict) -> float:
+    return sum(horas_personas.values()) / len(horas_personas) if horas_personas else C.HORAS_DIA_DEFAULT
+
+
+def resumen_departamentos_mes(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict,
+                              feriados: set, departamentos: list[str]) -> pd.DataFrame:
+    """Horas de trabajo de cada departamento en el mes, su peso, y la comparación con el mes anterior.
+    'Personas equivalentes' = horas / (días hábiles x horas por día): cuántas personas a tiempo
+    completo hicieron falta en el mes."""
+    horas, cap = matriz_departamentos(reg, anio, mes, horas_personas, feriados, departamentos)
+    a2, m2 = meses_atras(anio, mes, 2)[0]
+    previas, _ = matriz_departamentos(reg, a2, m2, horas_personas, feriados, departamentos)
+    total = horas.sum(axis=1)
+    prev = previas.sum(axis=1).reindex(total.index).fillna(0.0)
+    ini, fin = rango_mes(anio, mes)
+    dias_hab = len(dias_habiles(ini, fin, feriados))
+    cap_mes, trabajo_total = float(cap.sum()), float(total.sum())
+    base_persona = dias_hab * _hd_prom(horas_personas)
+    out = pd.DataFrame({
+        "Departamento": total.index,
+        "Horas": total.round(1).to_numpy(),
+        "% del trabajo": (total / trabajo_total * 100).round(1).to_numpy() if trabajo_total > 0 else 0.0,
+        "% de la capacidad del equipo": (total / cap_mes * 100).round(1).to_numpy() if cap_mes > 0 else 0.0,
+        "Personas equivalentes": (total / base_persona).round(2).to_numpy() if base_persona > 0 else 0.0,
+        "Mes anterior (hs)": prev.round(1).to_numpy(),
+    })
+    out["Variación %"] = ((out["Horas"] - out["Mes anterior (hs)"]) / out["Mes anterior (hs)"] * 100
+                          ).where(out["Mes anterior (hs)"] > 0).round(0)
+    return out.sort_values("Horas", ascending=False, kind="stable").reset_index(drop=True)
+
+
+def ventanas_pico(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict, feriados: set,
+                  departamentos: list[str], n_dias: int = 4) -> pd.DataFrame:
+    """Para cada departamento, la ventana de n días hábiles seguidos con más horas de trabajo.
+    Solo se miran ventanas donde alguien cargó todos los días (si no, las horas libres saldrían infladas).
+    'Una persona alcanza' = lo que una sola persona puede hacer en esos días (n x horas por día).
+    'Libre del equipo' = capacidad de todos - trabajo de todos en esos días."""
+    horas, cap = matriz_departamentos(reg, anio, mes, horas_personas, feriados, departamentos)
+    con_datos = dias_con_datos(reg, anio, mes)
+    habiles = [d for d in horas.columns if es_habil(d, feriados)]
+    n = min(n_dias, len(habiles))
+    cols = ["Departamento", "Desde", "Hasta", "Horas", "Personas equivalentes", "Libre del equipo (hs)", "Lectura"]
+    if n <= 0:
+        return pd.DataFrame(columns=cols)
+    trabajo_total = horas.sum(axis=0)
+    una_persona = n * _hd_prom(horas_personas)
+    filas = []
+    for dep in horas.index:
+        mejor = None
+        for i in range(len(habiles) - n + 1):
+            v = habiles[i:i + n]
+            if not all(d in con_datos for d in v):
+                continue
+            h = float(horas.loc[dep, v].sum())
+            if mejor is None or h > mejor[0]:
+                mejor = (h, v)
+        if mejor is None or mejor[0] <= 0:
+            continue
+        h, v = mejor
+        libre = max(0.0, float(cap[v].sum()) - float(trabajo_total[v].sum()))
+        if h <= una_persona + 0.05:
+            lectura = "✅ Una persona alcanza"
+        else:
+            exceso = h - una_persona
+            lectura = (f"🤝 Necesita ayuda: el equipo tenía {_hs(libre)} hs libres" if libre >= exceso
+                       else f"⚠️ No alcanza: faltan {_hs(exceso - libre)} hs")
+        filas.append({"Departamento": dep, "Desde": v[0], "Hasta": v[-1], "Horas": round(h, 1),
+                      "Personas equivalentes": round(h / una_persona, 2),
+                      "Libre del equipo (hs)": round(libre, 1), "Lectura": lectura})
+    out = pd.DataFrame(filas, columns=cols)
+    return out.sort_values("Horas", ascending=False, kind="stable").reset_index(drop=True)
+
+
+def puede_absorber(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict, feriados: set,
+                   horas_necesarias: float, n_dias: int):
+    """¿Podría el equipo absorber 'horas_necesarias' en 'n_dias' días hábiles? Toma como referencia las horas
+    libres promedio por día del mes indicado (solo días con datos). Devuelve None si no hay datos."""
+    horas, cap = matriz_departamentos(reg, anio, mes, horas_personas, feriados, [])
+    con_datos = dias_con_datos(reg, anio, mes)
+    dias = [d for d in horas.columns if es_habil(d, feriados) and d in con_datos]
+    if not dias or n_dias <= 0:
+        return None
+    trabajo = horas.sum(axis=0)
+    libre_prom = sum(max(0.0, float(cap[d]) - float(trabajo[d])) for d in dias) / len(dias)
+    cap_prom = sum(float(cap[d]) for d in dias) / len(dias)
+    libre_ventana = libre_prom * n_dias
+    return {
+        "dias_usados": len(dias), "libre_por_dia": libre_prom, "libre_ventana": libre_ventana,
+        "personas_equivalentes": horas_necesarias / (n_dias * _hd_prom(horas_personas)),
+        "pct_capacidad": (horas_necesarias / (n_dias * cap_prom) * 100) if cap_prom > 0 else None,
+        "alcanza": libre_ventana >= horas_necesarias, "faltan": max(0.0, horas_necesarias - libre_ventana),
+    }
