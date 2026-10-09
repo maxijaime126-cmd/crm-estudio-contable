@@ -250,7 +250,7 @@ class TestEtapa2(unittest.TestCase):
             ("2026-10-06", "Athina", "DOCUMENTACIÓN", "Carga de documentación", "Sociedades", 360),
         ])
         hp = {"Natalia": 6.0, "Athina": 6.0}
-        h, res = calc.semanal_departamentos(reg, 2026, 10, hp, FER, ["IMPUESTOS", "DOCUMENTACIÓN"])
+        h, res = calc.semanal_departamentos(reg, 2026, 10, hp, FER, ["IMPUESTOS", "DOCUMENTACIÓN"], solo_con_datos=False)
         s1, s2 = h.columns[0], h.columns[1]
         self.assertEqual(h.loc["IMPUESTOS", s1], 6)
         self.assertEqual(h.loc["IMPUESTOS", s2], 10)
@@ -541,6 +541,106 @@ class TestCargaPorDepartamento(unittest.TestCase):
         self.assertAlmostEqual(r["pct_capacidad"], 20 / 48 * 100, places=3)
         self.assertTrue(calc.puede_absorber(self.datos_a(), 2026, 10, self.HP, FER, 10, 4)["alcanza"])
         self.assertIsNone(calc.puede_absorber(registros([]), 2026, 10, self.HP, FER, 20, 4))
+
+
+class TestInformeContador(unittest.TestCase):
+    HP = {"Natalia": 6.0, "Athina": 6.0}
+    DEPS = ["IMPUESTOS", "DOCUMENTACIÓN"]
+
+    def datos(self):
+        return registros([
+            ("2026-09-03", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 300),                      # mes anterior (mismo tramo): 5 hs
+            ("2026-10-05", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360),                      # 12 de 12: saturado
+            ("2026-10-05", "Athina", "DOCUMENTACIÓN", "Carga de documentación", "Sociedades", 360),
+            ("2026-10-06", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360),                      # 9 de 12: alto
+            ("2026-10-06", "Athina", "DOCUMENTACIÓN", "Carga de documentación", "Sociedades", 180),
+            ("2026-10-06", "Athina", "GENERAL", "Disponible", "", 180),
+            ("2026-10-07", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 180),                      # 6 de 12: con margen
+            ("2026-10-07", "Natalia", "GENERAL", "Disponible", "", 180),
+            ("2026-10-07", "Athina", "DOCUMENTACIÓN", "Gestión y mejoras del departamento", "Capacitación", 360),
+        ])
+
+    def test_ocupacion_diaria_y_estados(self):
+        d = calc.ocupacion_diaria_equipo(self.datos(), 2026, 10, self.HP, FER, self.DEPS)
+        est = dict(zip(d["Fecha"], d["Estado"]))
+        self.assertEqual(est[date(2026, 10, 5)], "Saturado")
+        self.assertEqual(est[date(2026, 10, 6)], "Alto")
+        self.assertEqual(est[date(2026, 10, 7)], "Con margen")
+        self.assertEqual(len(d), 3)                                        # solo días con carga
+        fila = d[d["Fecha"] == date(2026, 10, 5)].iloc[0]
+        self.assertEqual((fila["Trabajo (hs)"], fila["Capacidad (hs)"], fila["Ocupación %"]), (12.0, 12.0, 100.0))
+        self.assertEqual(fila["Departamento principal"], "IMPUESTOS")      # empata con Documentación: gana el primero
+
+    def test_extra_del_equipo_marca_saturado(self):
+        reg = registros([("2026-10-05", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 480),    # 8 hs: 2 de extra
+                         ("2026-10-05", "Athina", "DOCUMENTACIÓN", "Carga de documentación", "Sociedades", 60)])
+        d = calc.ocupacion_diaria_equipo(reg, 2026, 10, self.HP, FER, self.DEPS)
+        self.assertEqual(d.iloc[0]["Extra (hs)"], 2.0)
+        self.assertEqual(d.iloc[0]["Estado"], "Saturado")                  # 9/12 = 75% pero con 2 hs extra
+
+    def test_cobertura(self):
+        c, total = calc.cobertura_carga(self.datos(), 2026, 10, self.HP, FER, date(2026, 10, 9))
+        self.assertEqual(total, 12)                                        # 6 días hábiles (1,2,5,6,7,8) x 2 personas
+        self.assertEqual(c, 6)                                             # días 5, 6 y 7 completos para ambos
+
+    def test_tiempo_libre(self):
+        t = calc.tiempo_libre_mes(self.datos(), 2026, 10)
+        self.assertEqual(t["disponible"], 6.0)
+        self.assertEqual(t["gestion_total"], 6.0)
+        self.assertEqual(list(t["gestion"]["Departamento"]), ["DOCUMENTACIÓN"])
+
+    def test_informe_completo(self):
+        inf = calc.informe_departamentos(self.datos(), 2026, 10, self.HP, FER, self.DEPS, date(2026, 10, 9), 3)
+        self.assertEqual(inf["totales"]["trabajo"], 24.0)                  # Natalia 15 + Athina 9 (Gestión y mejoras no es trabajo)
+        txt = " ".join(inf["hallazgos"])
+        self.assertIn("IMPUESTOS", txt)                                    # el más cargado
+        self.assertIn("saturado", txt)
+        self.assertIn("Mayor suba", txt)                                   # Impuestos: de 5 hs a 18 hs
+        self.assertEqual(inf["cobertura"], (6, 12))
+        self.assertTrue(any("Atención con los datos" in x for x in inf["hallazgos"]))   # 50% < 90%
+        self.assertEqual(set(inf["departamentos"]["Departamento"]), set(self.DEPS))
+
+
+class TestMesEnCurso(unittest.TestCase):
+    HP = {"Natalia": 6.0, "Athina": 6.0}
+
+    def test_persona_hasta_un_dia(self):
+        reg = registros([("2026-10-05", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360)])
+        full = calc.resumen_persona_mes(reg, "Natalia", 2026, 10, HD, FER)
+        corte = calc.resumen_persona_mes(reg, "Natalia", 2026, 10, HD, FER, hasta=date(2026, 10, 9))
+        self.assertEqual(full["capacidad"], 126)
+        self.assertEqual(corte["capacidad"], 7 * 6)                   # 1, 2, 5, 6, 7, 8 y 9 de octubre
+        self.assertEqual(corte["utilizacion"], round(6 / 42 * 100, 1))
+
+    def test_semanal_no_cuenta_semanas_sin_datos(self):
+        reg = registros([("2026-10-05", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360),
+                         ("2026-10-06", "Athina", "IMPUESTOS", "IVA mensual", "Control", 360)])
+        _, res = calc.semanal_departamentos(reg, 2026, 10, self.HP, FER, ["IMPUESTOS"])
+        caps = list(res["Capacidad del equipo (hs)"])
+        self.assertEqual(caps, [0.0, 24.0, 0.0, 0.0, 0.0])            # solo los 2 días cargados x 2 personas x 6 hs
+        self.assertTrue(res["Ocupación %"].iloc[0] != res["Ocupación %"].iloc[0])      # sin datos: no hay %
+
+    def test_mes_anterior_se_compara_en_el_mismo_tramo(self):
+        reg = registros([
+            ("2026-09-03", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 300),       # dentro del tramo (días 1-8)
+            ("2026-09-20", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 6000),      # fuera del tramo
+            ("2026-10-05", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 600),
+        ])
+        r = calc.resumen_departamentos_mes(reg, 2026, 10, self.HP, FER, ["IMPUESTOS"], hasta=date(2026, 10, 8))
+        fila = r.iloc[0]
+        self.assertEqual((fila["Horas"], fila["Mes anterior (hs)"], fila["Variación %"]), (10.0, 5.0, 100.0))
+        r2 = calc.resumen_departamentos_mes(reg, 2026, 10, self.HP, FER, ["IMPUESTOS"])      # sin tope: mes completo
+        self.assertEqual(r2.iloc[0]["Mes anterior (hs)"], 105.0)
+
+    def test_informe_de_mes_en_curso(self):
+        reg = registros([("2026-09-03", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 300),
+                         ("2026-10-05", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360),
+                         ("2026-10-06", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360)])
+        inf = calc.informe_departamentos(reg, 2026, 10, self.HP, FER, ["IMPUESTOS"], date(2026, 10, 9), 4)
+        self.assertTrue(inf["parcial"])
+        self.assertEqual(inf["ultimo_dia"], date(2026, 10, 6))
+        self.assertEqual(inf["totales"]["capacidad"], 4 * 6 * 2)         # 1, 2, 5 y 6 de octubre x 2 personas x 6 hs
+        self.assertIn("El mes está en curso", inf["hallazgos"][0])
 
 
 class FakeWS:
