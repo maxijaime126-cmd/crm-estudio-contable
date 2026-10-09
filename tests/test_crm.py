@@ -478,6 +478,71 @@ class TestCompletarYPendientes(unittest.TestCase):
         self.assertEqual(calc.dias_pendientes(registros([]), "Natalia", 6.0, FER, date(2026, 10, 1)), [])
 
 
+class TestCargaPorDepartamento(unittest.TestCase):
+    HP = {"Natalia": 6.0, "Athina": 6.0}
+    DEPS = ["IMPUESTOS", "DOCUMENTACIÓN"]
+
+    def datos_a(self):
+        filas = [("2026-09-10", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 600)]
+        for dia in ("05", "06", "07", "08"):
+            filas += [(f"2026-10-{dia}", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360),
+                      (f"2026-10-{dia}", "Athina", "DOCUMENTACIÓN", "Carga de documentación", "Sociedades", 180),
+                      (f"2026-10-{dia}", "Athina", "GENERAL", "Disponible", "", 180)]
+        return registros(filas)
+
+    def test_resumen_del_mes(self):
+        r = calc.resumen_departamentos_mes(self.datos_a(), 2026, 10, self.HP, FER, self.DEPS)
+        imp = r[r.Departamento == "IMPUESTOS"].iloc[0]
+        self.assertEqual(r.iloc[0]["Departamento"], "IMPUESTOS")                 # el más cargado va primero
+        self.assertEqual((imp["Horas"], imp["% del trabajo"]), (24.0, 66.7))
+        self.assertEqual(imp["% de la capacidad del equipo"], round(24 / 252 * 100, 1))   # 21 días x 12 hs
+        self.assertEqual(imp["Personas equivalentes"], round(24 / (21 * 6), 2))
+        self.assertEqual((imp["Mes anterior (hs)"], imp["Variación %"]), (10.0, 140.0))
+        doc = r[r.Departamento == "DOCUMENTACIÓN"].iloc[0]
+        self.assertTrue(doc["Variación %"] != doc["Variación %"])                  # sin mes anterior: no hay base
+
+    def test_ventana_una_persona_alcanza(self):
+        v = calc.ventanas_pico(self.datos_a(), 2026, 10, self.HP, FER, self.DEPS, 4)
+        imp = v[v.Departamento == "IMPUESTOS"].iloc[0]
+        self.assertEqual((imp["Desde"], imp["Hasta"], imp["Horas"]), (date(2026, 10, 5), date(2026, 10, 8), 24.0))
+        self.assertEqual(imp["Personas equivalentes"], 1.0)
+        self.assertEqual(imp["Lectura"], "✅ Una persona alcanza")
+
+    def test_ventana_necesita_ayuda_y_el_equipo_la_cubre(self):
+        reg = registros(
+            [(f"2026-10-{d}", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360) for d in ("05", "06", "07", "08")]
+            + [(f"2026-10-{d}", "Athina", "IMPUESTOS", "IVA mensual", "Control", 120) for d in ("05", "06")]
+            + [(f"2026-10-{d}", "Athina", "DOCUMENTACIÓN", "Carga de documentación", "Sociedades", 180)
+               for d in ("05", "06", "07", "08")])
+        v = calc.ventanas_pico(reg, 2026, 10, self.HP, FER, self.DEPS, 4)
+        imp = v[v.Departamento == "IMPUESTOS"].iloc[0]
+        self.assertEqual(imp["Horas"], 28.0)                                       # 4 hs más de lo que hace una persona
+        self.assertEqual(imp["Libre del equipo (hs)"], 8.0)                        # 48 de capacidad - 40 de trabajo
+        self.assertEqual(imp["Lectura"], "🤝 Necesita ayuda: el equipo tenía 8,0 hs libres")
+
+    def test_ventana_que_el_equipo_no_alcanza_a_cubrir(self):
+        reg = registros([(f"2026-10-{d}", p, "IMPUESTOS", "IVA mensual", "Control", 360)
+                         for d in ("05", "06", "07", "08") for p in ("Natalia", "Athina")])
+        v = calc.ventanas_pico(reg, 2026, 10, self.HP, FER, ["IMPUESTOS"], 4)
+        self.assertEqual(v.iloc[0]["Lectura"], "⚠️ No alcanza: faltan 24,0 hs")
+
+    def test_ventanas_ignoran_dias_sin_datos(self):
+        reg = registros([("2026-10-05", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360)])
+        v = calc.ventanas_pico(reg, 2026, 10, self.HP, FER, self.DEPS, 4)
+        self.assertTrue(v.empty)                         # no hay 4 días seguidos con datos: no se inventa nada
+
+    def test_podemos_absorber_20_horas_en_4_dias(self):
+        r = calc.puede_absorber(self.datos_a(), 2026, 10, self.HP, FER, 20, 4)
+        self.assertEqual(r["dias_usados"], 4)
+        self.assertEqual((r["libre_por_dia"], r["libre_ventana"]), (3.0, 12.0))     # 12 de capacidad - 9 de trabajo
+        self.assertFalse(r["alcanza"])
+        self.assertEqual(r["faltan"], 8.0)
+        self.assertAlmostEqual(r["personas_equivalentes"], 20 / 24, places=4)
+        self.assertAlmostEqual(r["pct_capacidad"], 20 / 48 * 100, places=3)
+        self.assertTrue(calc.puede_absorber(self.datos_a(), 2026, 10, self.HP, FER, 10, 4)["alcanza"])
+        self.assertIsNone(calc.puede_absorber(registros([]), 2026, 10, self.HP, FER, 20, 4))
+
+
 class FakeWS:
     def __init__(self, title, ids):
         self.title, self.rows, self.col_count, self.id = title, [], 6, next(ids)
