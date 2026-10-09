@@ -1,8 +1,13 @@
 """Configuración central del CRM v2. Lo que cambia seguido (catálogo, personas,
 feriados) vive en el Google Sheet, no acá."""
 
+from datetime import date
+
 SPREADSHEET = "CRM_Estudio_Datos"
 TZ = "America/Argentina/Buenos_Aires"
+
+# Desde esta fecha se reclaman los días sin cargar (el aviso de días pendientes no mira antes)
+FECHA_INICIO = date(2026, 10, 1)
 
 # --- Tiempo ---
 HORAS_DIA_DEFAULT = 6.0
