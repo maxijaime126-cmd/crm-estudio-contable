@@ -699,6 +699,52 @@ class TestSemanalPorPersona(unittest.TestCase):
         self.assertEqual(list(calc.catalogo_activo(cat)["Tarea"]), ["C", "B", "A"])
 
 
+class TestSincronizarCatalogo(unittest.TestCase):
+    def sheet_sin(self, tarea):
+        df = pd.DataFrame(CATALOGO_SEED, columns=C.COLS_CATALOGO)
+        return df[df["Tarea"] != tarea].astype(str)
+
+    def test_detecta_la_tarea_nueva_y_la_deja_en_su_lugar(self):
+        falta = calc.catalogo_faltante(self.sheet_sin("Metodología individual"), CATALOGO_SEED)
+        self.assertEqual(list(falta["Subtarea"]), ["Armado", "Cambio de parámetro", "Actualización"])
+        self.assertTrue((falta["Departamento"] == "IMPUESTOS").all())
+        # misma Orden que IIBB mensual / Control (la fila anterior): queda justo después en el desplegable
+        sheet = self.sheet_sin("Metodología individual")
+        orden_iibb = sheet[(sheet.Departamento == "IMPUESTOS") & (sheet.Tarea == "IIBB mensual")]["Orden"].iloc[-1]
+        self.assertTrue((falta["Orden"] == orden_iibb).all())
+        combinado = pd.concat([sheet, falta], ignore_index=True)
+        tareas = list(dict.fromkeys(calc.catalogo_activo(combinado).query("Departamento == 'IMPUESTOS'")["Tarea"]))
+        self.assertEqual(tareas[tareas.index("IIBB mensual") + 1], "Metodología individual")
+
+    def test_es_idempotente_y_no_toca_lo_que_ya_esta(self):
+        sheet = pd.DataFrame(CATALOGO_SEED, columns=C.COLS_CATALOGO).astype(str)
+        self.assertTrue(calc.catalogo_faltante(sheet, CATALOGO_SEED).empty)
+        sheet.loc[0, "Subtarea"] = "OTRO NOMBRE"                      # algo que cambiaron a propósito en el Sheet
+        self.assertEqual(len(calc.catalogo_faltante(sheet, CATALOGO_SEED)), 1)
+
+    def test_no_distingue_mayusculas_ni_espacios(self):
+        sheet = pd.DataFrame(CATALOGO_SEED, columns=C.COLS_CATALOGO).astype(str)
+        sheet["Departamento"] = sheet["Departamento"].str.title()
+        sheet["Tarea"] = " " + sheet["Tarea"].str.upper() + " "
+        self.assertTrue(calc.catalogo_faltante(sheet, CATALOGO_SEED).empty)
+
+    def test_dpto_en_minuscula_se_une_al_mismo_departamento(self):
+        cat = pd.DataFrame([{"Departamento": "IMPUESTOS", "Tarea": "A", "Subtarea": "", "Tipo": "Trabajo", "Orden": "1", "Activo": "SI"},
+                            {"Departamento": "Impuestos", "Tarea": "B", "Subtarea": "", "Tipo": "Trabajo", "Orden": "2", "Activo": "SI"}])
+        out = calc.catalogo_activo(cat)
+        self.assertEqual(set(out["Departamento"]), {"IMPUESTOS"})
+
+    def test_departamento_de_una_carga_en_minuscula_igual_se_reconoce(self):
+        reg = registros([("2026-10-05", "Natalia", "Impuestos", "IVA mensual", "Control", 60)])
+        self.assertEqual(reg.loc[0, "Departamento"], "IMPUESTOS")
+
+    def test_estado_de_carga_de_una_persona(self):
+        self.assertEqual(calc.estado_carga(100, 24), "Ocupada")
+        self.assertEqual(calc.estado_carga(70, 24), "Carga alta")
+        self.assertEqual(calc.estado_carga(40, 24), "Con margen")
+        self.assertEqual(calc.estado_carga(float("nan"), 0), "Sin datos")
+
+
 class FakeWS:
     def __init__(self, title, ids):
         self.title, self.rows, self.col_count, self.id = title, [], 6, next(ids)
