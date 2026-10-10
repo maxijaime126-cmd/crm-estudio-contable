@@ -68,7 +68,7 @@ def catalogo_activo(df_cat: pd.DataFrame) -> pd.DataFrame:
     out = df_cat.copy()
     for c in ("Departamento", "Tarea", "Subtarea", "Tipo", "Activo"):
         out[c] = out[c].fillna("").astype(str).str.strip()
-    out["Orden"] = pd.to_numeric(out["Orden"], errors="coerce").fillna(10**6)
+    out["Orden"] = pd.to_numeric(out["Orden"].astype(str).str.replace(",", "."), errors="coerce").fillna(10**6)
     out = out[out["Activo"].str.upper().isin(["SI", "SÍ", "TRUE", "1", ""])]
     return out.sort_values("Orden", kind="stable").reset_index(drop=True)
 
@@ -814,3 +814,59 @@ def informe_departamentos(reg: pd.DataFrame, anio: int, mes: int, horas_personas
     return {"anio": anio, "mes": mes, "n_dias": n_dias, "ultimo_dia": ultimo, "parcial": parcial, "personas": personas, "totales": tot, "departamentos": res,
             "semanal_horas": sem_h, "semanal": sem_res, "dias": dias, "ventanas": ventanas, "picos": picos,
             "tiempo_libre": libre, "cobertura": (completos, total_dp), "hallazgos": h}
+
+
+# ----------------------------------------------------------------------------
+# Distribución semanal por persona (¿quién está ocupado y quién puede ayudar?)
+# ----------------------------------------------------------------------------
+def semanal_por_persona(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict, feriados: set,
+                        hoy: date | None = None) -> pd.DataFrame:
+    """Una fila por persona y semana. Solo cuentan los días en que esa persona cargó algo
+    (si no, los días sin cargar aparecerían como horas libres). Libre = capacidad - trabajo.
+    'Días sin carga' son los días hábiles ya pasados (hasta ayer) sin ninguna carga de esa persona."""
+    ini, fin = rango_mes(anio, mes)
+    semanas = semanas_del_mes(anio, mes)
+    cols = ["Persona", "Semana", "Capacidad (hs)", "Trabajo (hs)", "Disponible (hs)", "Ausencia (hs)", "Extra (hs)",
+            "Libre (hs)", "Ocupación %", "Días con carga", "Días sin carga", "Departamento principal",
+            "% en ese departamento"]
+    filas = []
+    for persona, hd in horas_personas.items():
+        rp = reg[(reg["Persona"] == persona) & (reg["Fecha"].dt.date >= ini) & (reg["Fecha"].dt.date <= fin)]
+        det = por_dia(rp, hd, feriados, ini, fin)
+        dias_carga = set(rp["Fecha"].dt.date)
+        trabajo_rp = rp[rp["Tipo"] == C.TIPO_TRABAJO]
+        for etiqueta, a, b in semanas:
+            sub = det[[a <= d.date() <= b for d in det.index]]
+            con = sub[[d.date() in dias_carga for d in sub.index]]
+            cap = float(con["Capacidad"].sum())
+            trabajo = float(con[C.TIPO_TRABAJO].sum())
+            sin_carga = 0
+            if hoy is not None:
+                sin_carga = sum(1 for d in sub.index if es_habil(d.date(), feriados)
+                                and d.date() < hoy and d.date() not in dias_carga)
+            tw = trabajo_rp[(trabajo_rp["Fecha"].dt.date >= a) & (trabajo_rp["Fecha"].dt.date <= b)]
+            por_dep = tw.groupby("Departamento")["Horas"].sum()
+            principal = str(por_dep.idxmax()) if not por_dep.empty else ""
+            pct = round(float(por_dep.max() / por_dep.sum() * 100), 0) if not por_dep.empty else float("nan")
+            filas.append({
+                "Persona": persona, "Semana": etiqueta, "Capacidad (hs)": round(cap, 1),
+                "Trabajo (hs)": round(trabajo, 1), "Disponible (hs)": round(float(con[C.TIPO_DISPONIBLE].sum()), 1),
+                "Ausencia (hs)": round(float(con[C.TIPO_AUSENCIA].sum()), 1), "Extra (hs)": round(float(con["Extra"].sum()), 1),
+                "Libre (hs)": round(max(0.0, cap - trabajo), 1),
+                "Ocupación %": round(trabajo / cap * 100, 0) if cap > 0 else float("nan"),
+                "Días con carga": int(sum(1 for d in sub.index if d.date() in dias_carga)),
+                "Días sin carga": int(sin_carga), "Departamento principal": principal, "% en ese departamento": pct})
+    return pd.DataFrame(filas, columns=cols)
+
+
+def semanal_persona_departamento(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict):
+    """(DataFrame Persona/Semana/Departamento/Horas de trabajo, lista de semanas en orden)."""
+    semanas = semanas_del_mes(anio, mes)
+    base = reg[(reg["Tipo"] == C.TIPO_TRABAJO) & (reg["Persona"].isin(list(horas_personas)))]
+    filas = []
+    for etiqueta, a, b in semanas:
+        r = base[(base["Fecha"].dt.date >= a) & (base["Fecha"].dt.date <= b)]
+        g = r.groupby(["Persona", "Departamento"])["Horas"].sum()
+        filas += [{"Persona": p, "Semana": etiqueta, "Departamento": dep, "Horas": round(float(h), 1)}
+                  for (p, dep), h in g.items()]
+    return pd.DataFrame(filas, columns=["Persona", "Semana", "Departamento", "Horas"]), [x[0] for x in semanas]
