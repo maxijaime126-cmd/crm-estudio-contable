@@ -786,6 +786,9 @@ def tarjeta_persona(r) -> str:
             f'<div class="pcard-n">{cuerpo}</div>{linea_dep}{linea_av}</div>')
 
 
+PALETA_PERSONAS = ["#264653", "#2A9D8F", "#E9C46A", "#F4A261", "#E76F51", "#6A4C93"]
+
+
 def tab_personas(ctx, anio, mes):
     """Semana por semana, persona por persona: quién está ocupado, en qué departamento y quién puede ayudar."""
     reg, feriados = ctx["reg"], ctx["feriados"]
@@ -799,60 +802,98 @@ def tab_personas(ctx, anio, mes):
     if sp.empty or float(sp["Capacidad (hs)"].sum()) == 0:
         st.info("Todavía no hay horas cargadas en este mes.")
         return
-    st.caption("Elegí una semana: cada tarjeta muestra qué tan ocupada estuvo la persona, cuánto margen tuvo y en qué "
-               "departamento trabajó. Solo cuentan los días en que esa persona cargó horas (un día sin cargar no se toma "
-               "como libre). **Libre** = capacidad − trabajo.")
     con_datos = [x for x in semanas if float(sp[sp["Semana"] == x]["Capacidad (hs)"].sum()) > 0]
-    sel = st.selectbox("Semana", con_datos, index=len(con_datos) - 1, key="sp_sem")
-    t = sp[sp["Semana"] == sel].sort_values(["Libre (hs)", "Persona"], ascending=[False, True])
-    estados = {r["Persona"]: calc.estado_carga(r["Ocupación %"], r["Capacidad (hs)"]) for _, r in t.iterrows()}
-    ocupadas = [f"{r['Persona']} ({r['Departamento principal']})" if r["Departamento principal"] else r["Persona"]
-                for _, r in t.iterrows() if estados[r["Persona"]] == "Ocupada"]
-    margen = [f"{r['Persona']} ({fmt_hs(float(r['Libre (hs)']))} hs libres)"
-              for _, r in t.iterrows() if estados[r["Persona"]] == "Con margen" and float(r["Libre (hs)"]) > 0]
-    if ocupadas and margen:
-        st.info(f"👉 Ocupadas: {', '.join(ocupadas)}. Con margen para ayudar: {', '.join(margen)}.")
-    elif ocupadas:
-        st.warning(f"Ocupadas: {', '.join(ocupadas)}. Nadie con margen esa semana.")
+    colores = {p: PALETA_PERSONAS[i % len(PALETA_PERSONAS)] for i, p in enumerate(personas)}
+    vista = st.radio("Mostrar", ["📊 Trabajo por semana", "🤝 Quién puede ayudar", "🗓️ Mes completo"],
+                     horizontal=True, key="sp_vista")
+    st.caption("Solo cuentan los días en que cada persona cargó horas (un día sin cargar no se toma como libre). "
+               "**Libre** = capacidad − trabajo.")
+
+    if vista.startswith("📊"):
+        seccion("Trabajo por semana y persona")
+        fig = go.Figure()
+        for p in personas:
+            ys = [float(sp[(sp["Persona"] == p) & (sp["Semana"] == x)]["Trabajo (hs)"].iloc[0]) for x in con_datos]
+            fig.add_trace(go.Bar(name=p, x=con_datos, y=ys, marker_color=colores[p]))
+        capacidad = [float(sp[sp["Semana"] == x]["Capacidad (hs)"].sum()) for x in con_datos]
+        fig.add_trace(go.Scatter(name="Capacidad del equipo", x=con_datos, y=capacidad, mode="lines+markers",
+                                 line=dict(color="#1B2A38", dash="dash")))
+        fig.update_layout(barmode="stack", yaxis_title="Horas")
+        st.plotly_chart(estilo_fig(fig, 400))
+        st.caption("Cada color es una persona. La línea punteada es la capacidad del equipo en los días cargados.")
+
+        seccion("Horas libres por persona y semana")
+        libres = sp[sp["Semana"].isin(con_datos)]
+        fig2 = px.bar(libres, x="Semana", y="Libre (hs)", color="Persona", barmode="group",
+                      color_discrete_map=colores, category_orders={"Semana": con_datos, "Persona": personas})
+        fig2.update_layout(yaxis_title="Horas libres")
+        st.plotly_chart(estilo_fig(fig2, 340))
+
+        seccion("Resumen de la semana")
+        cap_s = sp.groupby("Semana")["Capacidad (hs)"].sum()
+        trab_s = sp.groupby("Semana")["Trabajo (hs)"].sum()
+        libre_s = sp.groupby("Semana")["Libre (hs)"].sum()
+        tabla = pd.DataFrame({"Semana": con_datos,
+                              "Capacidad (hs)": [round(float(cap_s[x]), 1) for x in con_datos],
+                              "Trabajo (hs)": [round(float(trab_s[x]), 1) for x in con_datos],
+                              "Libre (hs)": [round(float(libre_s[x]), 1) for x in con_datos],
+                              "Ocupación %": [round(float(trab_s[x] / cap_s[x] * 100), 0) for x in con_datos]})
+        for p in personas:
+            tabla[f"{p} (hs)"] = [float(sp[(sp["Persona"] == p) & (sp["Semana"] == x)]["Trabajo (hs)"].iloc[0])
+                                  for x in con_datos]
+        st.dataframe(tabla, hide_index=True)
+
+    elif vista.startswith("🤝"):
+        sel = st.selectbox("Semana", con_datos, index=len(con_datos) - 1, key="sp_sem")
+        t = sp[sp["Semana"] == sel].sort_values(["Libre (hs)", "Persona"], ascending=[False, True])
+        estados = {r["Persona"]: calc.estado_carga(r["Ocupación %"], r["Capacidad (hs)"]) for _, r in t.iterrows()}
+        ocupadas = [f"{r['Persona']} ({r['Departamento principal']})" if r["Departamento principal"] else r["Persona"]
+                    for _, r in t.iterrows() if estados[r["Persona"]] == "Ocupada"]
+        margen = [f"{r['Persona']} ({fmt_hs(float(r['Libre (hs)']))} hs libres)"
+                  for _, r in t.iterrows() if estados[r["Persona"]] == "Con margen" and float(r["Libre (hs)"]) > 0]
+        if ocupadas and margen:
+            st.info(f"👉 Ocupadas: {', '.join(ocupadas)}. Con margen para ayudar: {', '.join(margen)}.")
+        elif ocupadas:
+            st.warning(f"Ocupadas: {', '.join(ocupadas)}. Nadie con margen esa semana.")
+        else:
+            st.success("Nadie está al límite esa semana.")
+        st.markdown('<div class="pgrid">' + "".join(tarjeta_persona(r) for _, r in t.iterrows()) + "</div>",
+                    unsafe_allow_html=True)
+        with st.expander("Ver la tabla de la semana"):
+            cols = ["Persona", "Trabajo (hs)", "Disponible (hs)", "Libre (hs)", "Ocupación %", "Departamento principal",
+                    "% en ese departamento", "Días sin carga"]
+            st.dataframe(t[cols], hide_index=True)
+
     else:
-        st.success("Nadie está al límite esa semana.")
-    st.markdown('<div class="pgrid">' + "".join(tarjeta_persona(r) for _, r in t.iterrows()) + "</div>",
-                unsafe_allow_html=True)
-
-    seccion("Todo el mes: persona por semana")
-    z, texto = [], []
-    for p in personas:
-        fz, ft = [], []
-        for sem in semanas:
-            r = sp[(sp["Persona"] == p) & (sp["Semana"] == sem)].iloc[0]
-            fz.append(float(r["Ocupación %"]) if r["Capacidad (hs)"] > 0 else float("nan"))
-            ft.append(f"{r['Trabajo (hs)']:.1f} hs<br>libre {r['Libre (hs)']:.1f}" if r["Capacidad (hs)"] > 0 else "")
-        z.append(fz)
-        texto.append(ft)
-    fig = go.Figure(go.Heatmap(
-        z=z, x=[x.split(" (")[0] for x in semanas], y=personas, text=texto, texttemplate="%{text}", zmin=0, zmax=100,
-        colorscale=ESCALA_CARGA, colorbar=dict(title="% ocupada"), hoverongaps=False, xgap=3, ygap=3))
-    fig.update_yaxes(autorange="reversed")
-    estilo_fig(fig, max(240, 80 * len(personas) + 100))
-    fig.update_layout(plot_bgcolor=GRIS_SIN_DATOS)
-    st.plotly_chart(fig)
-    st.caption("Rojo = semana muy cargada, verde = con margen, gris = sin horas cargadas.")
-
-    if not dp.empty:
-        with st.expander("¿En qué departamentos trabajó cada persona?"):
+        seccion("Persona por semana")
+        z, texto = [], []
+        for p in personas:
+            fz, ft = [], []
+            for sem in semanas:
+                r = sp[(sp["Persona"] == p) & (sp["Semana"] == sem)].iloc[0]
+                fz.append(float(r["Ocupación %"]) if r["Capacidad (hs)"] > 0 else float("nan"))
+                ft.append(f"{r['Trabajo (hs)']:.1f} hs<br>libre {r['Libre (hs)']:.1f}" if r["Capacidad (hs)"] > 0 else "")
+            z.append(fz)
+            texto.append(ft)
+        fig = go.Figure(go.Heatmap(
+            z=z, x=[x.split(" (")[0] for x in semanas], y=personas, text=texto, texttemplate="%{text}", zmin=0, zmax=100,
+            colorscale=ESCALA_CARGA, colorbar=dict(title="% ocupada"), hoverongaps=False, xgap=3, ygap=3))
+        fig.update_yaxes(autorange="reversed")
+        estilo_fig(fig, max(240, 80 * len(personas) + 100))
+        fig.update_layout(plot_bgcolor=GRIS_SIN_DATOS)
+        st.plotly_chart(fig)
+        st.caption("Rojo = semana muy cargada, verde = con margen, gris = sin horas cargadas.")
+        if not dp.empty:
+            seccion("¿En qué departamentos trabajó cada persona?")
             dp = dp.copy()
             cortas = {x: x.split(" (")[0] for x in semanas}
             dp["Semana"] = dp["Semana"].map(cortas)
-            fig2 = px.bar(dp, x="Semana", y="Horas", color="Departamento", facet_col="Persona", facet_col_wrap=2,
+            fig3 = px.bar(dp, x="Semana", y="Horas", color="Departamento", facet_col="Persona", facet_col_wrap=2,
                           color_discrete_map=C.COLORES_DEPTO,
                           category_orders={"Semana": list(cortas.values()), "Persona": personas})
-            fig2.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
-            fig2.update_xaxes(title=None)
-            st.plotly_chart(estilo_fig(fig2, 270 * math.ceil(len(personas) / 2) + 40))
-    with st.expander("Ver la tabla de la semana"):
-        cols = ["Persona", "Trabajo (hs)", "Disponible (hs)", "Libre (hs)", "Ocupación %", "Departamento principal",
-                "% en ese departamento", "Días sin carga"]
-        st.dataframe(t[cols], hide_index=True)
+            fig3.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+            fig3.update_xaxes(title=None)
+            st.plotly_chart(estilo_fig(fig3, 270 * math.ceil(len(personas) / 2) + 40))
 
 
 def bloque_catalogo():
@@ -1145,8 +1186,9 @@ La duración se elige con un toque (10 min, 15, 30, 45, 1 h, 1 h 30, 2 h, 3 h, 4
   El gris significa que nadie cargó horas ese día. Abajo, los días más cargados y quién puede ayudar un día puntual.
 - **Departamentos:** cuántas horas consume cada departamento en el mes (contra el mes anterior), la ventana de 3, 4 o 5 días
   más cargada de cada uno, un **PDF para la reunión con el contador** y una calculadora: «20 horas en 4 días, ¿alcanza con las horas libres del equipo?».
-- **Semana por persona:** elegís una semana y cada tarjeta muestra qué tan ocupada estuvo cada persona, cuánto margen
-  tuvo y en qué departamento trabajó, para ver quién puede ayudar a quién. Abajo, el mes completo en una grilla.
+- **Semana por persona:** tres vistas. *Trabajo por semana* (barras apiladas por persona, igual que la vista por
+  departamento, más las horas libres y un resumen); *Quién puede ayudar* (una tarjeta por persona para la semana que elijas);
+  y *Mes completo* (grilla de persona por semana y departamentos de cada una).
 - **Quién completó el día:** arriba del Panel de control, el Admin ve quién cargó las horas del día (por defecto hoy).
 - **Semanal:** cuánto trabajo cae cada semana por departamento y cuántas horas libres tenía el equipo
   (capacidad − trabajo). Sirve para saber si un departamento puede absorber un pico o si conviene sumar gente.
