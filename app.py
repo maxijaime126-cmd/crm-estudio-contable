@@ -6,6 +6,7 @@ La lógica está en calc.py (con pruebas), los datos en store.py y los PDFs en p
 """
 import hmac
 import html
+import math
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
@@ -740,6 +741,62 @@ def datos_equipo(ctx, anio, mes):
     return pd.DataFrame(filas)
 
 
+def seccion_semanal_personas(ctx, anio, mes):
+    """Semana por semana, persona por persona: quién está ocupado, en qué departamento y quién tiene margen."""
+    reg, feriados = ctx["reg"], ctx["feriados"]
+    horas_pp = calc.horas_por_persona(ctx["personas"])
+    personas = list(horas_pp)
+    sp = calc.semanal_por_persona(reg, anio, mes, horas_pp, feriados, hoy_ar())
+    dp, semanas = calc.semanal_persona_departamento(reg, anio, mes, horas_pp)
+    seccion("Distribución semanal por persona")
+    if sp.empty or float(sp["Capacidad (hs)"].sum()) == 0:
+        st.info("Todavía no hay horas cargadas en este mes.")
+        return
+    st.caption("Cada persona, semana por semana: cuánto trabajó, cuánto margen tuvo y en qué departamento. Solo cuentan "
+               "los días en que esa persona cargó horas (los días sin cargar no se toman como libres). "
+               "**Libre** = capacidad − trabajo.")
+    z, texto = [], []
+    for p in personas:
+        fz, ft = [], []
+        for sem in semanas:
+            r = sp[(sp["Persona"] == p) & (sp["Semana"] == sem)].iloc[0]
+            fz.append(float(r["Ocupación %"]) if r["Capacidad (hs)"] > 0 else float("nan"))
+            ft.append(f"{r['Trabajo (hs)']:.1f} hs<br>libre {r['Libre (hs)']:.1f}" if r["Capacidad (hs)"] > 0 else "")
+        z.append(fz)
+        texto.append(ft)
+    fig = go.Figure(go.Heatmap(
+        z=z, x=semanas, y=personas, text=texto, texttemplate="%{text}", zmin=0, zmax=100, colorscale=ESCALA_CARGA,
+        colorbar=dict(title="% ocupado"), hoverongaps=False, xgap=3, ygap=3))
+    fig.update_yaxes(autorange="reversed")
+    estilo_fig(fig, max(240, 80 * len(personas) + 100))
+    fig.update_layout(plot_bgcolor=GRIS_SIN_DATOS)
+    st.plotly_chart(fig)
+
+    if not dp.empty:
+        st.markdown("**¿En qué departamentos trabajó cada persona?**")
+        dp = dp.copy()
+        cortas = {x: x.split(" (")[0] for x in semanas}
+        dp["Semana"] = dp["Semana"].map(cortas)
+        fig2 = px.bar(dp, x="Semana", y="Horas", color="Departamento", facet_col="Persona", facet_col_wrap=2,
+                      color_discrete_map=C.COLORES_DEPTO,
+                      category_orders={"Semana": list(cortas.values()), "Persona": personas})
+        fig2.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+        fig2.update_xaxes(title=None)
+        st.plotly_chart(estilo_fig(fig2, 270 * math.ceil(len(personas) / 2) + 40))
+
+    st.markdown("**¿Quién tiene margen para ayudar?**")
+    con_datos = [x for x in semanas if float(sp[sp["Semana"] == x]["Capacidad (hs)"].sum()) > 0]
+    sel = st.selectbox("Semana", con_datos, index=len(con_datos) - 1, key="sp_sem")
+    t = sp[sp["Semana"] == sel].sort_values(["Libre (hs)", "Persona"], ascending=[False, True])
+    top = t.iloc[0]
+    if float(top["Libre (hs)"]) > 0:
+        donde = f", sobre todo en {top['Departamento principal']}" if top["Departamento principal"] else ""
+        st.info(f"Con más margen en esa semana: {top['Persona']} ({fmt_hs(float(top['Libre (hs)']))} hs libres{donde}).")
+    cols = ["Persona", "Trabajo (hs)", "Disponible (hs)", "Libre (hs)", "Ocupación %", "Departamento principal",
+            "% en ese departamento", "Días sin carga"]
+    st.dataframe(t[cols], hide_index=True)
+
+
 def tab_equipo(ctx, anio, mes):
     tabla = datos_equipo(ctx, anio, mes)
     if tabla.empty:
@@ -751,6 +808,8 @@ def tab_equipo(ctx, anio, mes):
           (fmt_hs(tabla["Trabajo (hs)"].sum()), "Trabajo del equipo (hs)", "k-trab"),
           (fmt_hs(tabla["Disponible (hs)"].sum()), "Disponible (hs)", "k-disp"),
           (fmt_hs(tabla["Extra (hs)"].sum()), "Horas extra (hs)", "k-extra")])
+
+    seccion_semanal_personas(ctx, anio, mes)
 
     reg, feriados, cat = ctx["reg"], ctx["feriados"], ctx["cat"]
     horas_pp = calc.horas_por_persona(ctx["personas"])
@@ -999,6 +1058,8 @@ La duración se elige con un toque (10 min, 15, 30, 45, 1 h, 1 h 30, 2 h, 3 h, 4
   El gris significa que nadie cargó horas ese día. Abajo, los días más cargados y quién puede ayudar un día puntual.
 - **Departamentos:** cuántas horas consume cada departamento en el mes (contra el mes anterior), la ventana de 3, 4 o 5 días
   más cargada de cada uno, un **PDF para la reunión con el contador** y una calculadora: «20 horas en 4 días, ¿alcanza con las horas libres del equipo?».
+- **Equipo → Distribución semanal por persona:** semana por semana, cuánto trabajó cada persona, cuánto margen tuvo y en qué
+  departamentos, para ver quién puede ayudar a quién.
 - **Quién completó el día:** arriba del Panel de control, el Admin ve quién cargó las horas del día (por defecto hoy).
 - **Semanal:** cuánto trabajo cae cada semana por departamento y cuántas horas libres tenía el equipo
   (capacidad − trabajo). Sirve para saber si un departamento puede absorber un pico o si conviene sumar gente.
