@@ -68,6 +68,7 @@ def catalogo_activo(df_cat: pd.DataFrame) -> pd.DataFrame:
     out = df_cat.copy()
     for c in ("Departamento", "Tarea", "Subtarea", "Tipo", "Activo"):
         out[c] = out[c].fillna("").astype(str).str.strip()
+    out["Departamento"] = out["Departamento"].str.upper()      # "Impuestos" e "IMPUESTOS" son el mismo departamento
     out["Orden"] = pd.to_numeric(out["Orden"].astype(str).str.replace(",", "."), errors="coerce").fillna(10**6)
     out = out[out["Activo"].str.upper().isin(["SI", "SÍ", "TRUE", "1", ""])]
     return out.sort_values("Orden", kind="stable").reset_index(drop=True)
@@ -98,7 +99,7 @@ def _mapas_tipo(df_cat: pd.DataFrame):
     exacto, por_tarea, solo_tarea = {}, {}, {}
     if df_cat is not None and not df_cat.empty:
         for r in df_cat.itertuples():
-            d, t, s, tipo = (str(r.Departamento).strip(), str(r.Tarea).strip(),
+            d, t, s, tipo = (str(r.Departamento).strip().upper(), str(r.Tarea).strip(),
                               str(r.Subtarea).strip(), str(r.Tipo).strip())
             exacto[(d, t, s)] = tipo
             por_tarea.setdefault((d, t), tipo)
@@ -121,6 +122,7 @@ def preparar_registros(df_reg: pd.DataFrame, df_cat: pd.DataFrame) -> pd.DataFra
     out["Horas"] = out["Minutos"] / 60.0
     for c in ("ID", "Persona", "Departamento", "Tarea", "Subtarea", "Nota", "Registrado"):
         out[c] = out[c].fillna("").astype(str).str.strip()
+    out["Departamento"] = out["Departamento"].str.upper()
     exacto, por_tarea, solo_tarea = _mapas_tipo(df_cat)
     # Si no hay coincidencia exacta se busca por departamento+tarea y por último solo por tarea
     # (así «Disponible» y «Ausencias» funcionan aunque se carguen sin departamento).
@@ -870,3 +872,51 @@ def semanal_persona_departamento(reg: pd.DataFrame, anio: int, mes: int, horas_p
         filas += [{"Persona": p, "Semana": etiqueta, "Departamento": dep, "Horas": round(float(h), 1)}
                   for (p, dep), h in g.items()]
     return pd.DataFrame(filas, columns=["Persona", "Semana", "Departamento", "Horas"]), [x[0] for x in semanas]
+
+
+# ----------------------------------------------------------------------------
+# Sincronizar el catálogo del Sheet con el del código (solo agrega, nunca borra)
+# ----------------------------------------------------------------------------
+def _norm(x) -> str:
+    return str(x).strip().lower()
+
+
+def catalogo_faltante(df_cat_raw: pd.DataFrame, seed: list) -> pd.DataFrame:
+    """Filas del catálogo inicial (seed) que no están en la hoja Catalogo, comparando Departamento,
+    Tarea y Subtarea sin distinguir mayúsculas. A cada fila nueva le pone el Orden de la fila anterior
+    del mismo departamento: como el Sheet ordena por Orden y desempata por posición, queda justo después."""
+    existentes: dict = {}
+    maximo = 0.0
+    if df_cat_raw is not None and not df_cat_raw.empty:
+        for r in df_cat_raw.itertuples():
+            existentes[(_norm(r.Departamento), _norm(r.Tarea), _norm(r.Subtarea))] = str(r.Orden).strip()
+            try:
+                maximo = max(maximo, float(str(r.Orden).replace(",", ".")))
+            except ValueError:
+                pass
+    previo: dict = {}
+    filas = []
+    for dep, tarea, sub, tipo, _orden, _activo in seed:
+        clave = (_norm(dep), _norm(tarea), _norm(sub))
+        if clave in existentes:
+            previo[_norm(dep)] = existentes[clave]
+            continue
+        if _norm(dep) in previo:
+            orden = previo[_norm(dep)]
+        else:
+            maximo += 1
+            orden = str(int(maximo))
+        filas.append({"Departamento": dep, "Tarea": tarea, "Subtarea": sub, "Tipo": tipo,
+                      "Orden": orden, "Activo": "SI"})
+        existentes[clave] = orden
+        previo[_norm(dep)] = orden
+    return pd.DataFrame(filas, columns=C.COLS_CATALOGO)
+
+
+def estado_carga(ocupacion: float, capacidad: float) -> str:
+    """Etiqueta de qué tan cargada está una persona en una semana (mismos umbrales que el equipo)."""
+    if not capacidad or capacidad <= 0 or ocupacion != ocupacion:
+        return "Sin datos"
+    if ocupacion >= C.UMBRAL_SATURADO:
+        return "Ocupada"
+    return "Carga alta" if ocupacion >= C.UMBRAL_ALTO else "Con margen"
