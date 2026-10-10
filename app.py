@@ -19,6 +19,7 @@ import calc
 import config as C
 import pdf
 import store as S
+from catalogo_seed import CATALOGO_SEED
 
 st.set_page_config(page_title="Grupo Pressacco · Capacidad", layout="wide", page_icon="🏛️")
 
@@ -61,6 +62,15 @@ st.markdown("""
             margin-left: 8px; color: #fff; }
     .chip-trab { background: #2D9C6B; } .chip-disp { background: #0096C7; } .chip-aus { background: #6B7C8C; }
     .sec { font-size: 1.15rem; font-weight: 700; color: var(--azul); margin: 18px 0 4px 0; }
+    .pgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; margin: 6px 0 14px 0; }
+    .pcard { background: #fff; border: 1px solid var(--borde); border-radius: 14px; padding: 12px 14px;
+             box-shadow: 0 2px 8px rgba(0,0,0,.06); color: #1B2A38; }
+    .pcard-h { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 1.05rem; }
+    .pbar { background: #E6EDF3; border-radius: 999px; height: 10px; overflow: hidden; margin-bottom: 8px; }
+    .pbar > div { height: 100%; border-radius: 999px; }
+    .pcard-n { font-size: .9rem; }
+    .pcard-d { font-size: .85rem; margin-top: 6px; color: #41566B; }
+    .pcard-w { font-size: .8rem; margin-top: 4px; color: #8A4B0F; }
     div.stButton > button[kind="primary"] { border-radius: 10px; font-weight: 700; padding: .5rem 1.4rem; }
 </style>
 """, unsafe_allow_html=True)
@@ -588,11 +598,14 @@ def pantalla_resumen(ctx: dict, usuario: str, es_admin: bool):
     mes = f2.selectbox("Mes", list(range(1, 13)), index=hoy.month - 1, format_func=lambda m: C.MESES_ES[m])
 
     if es_admin:
-        t1, t2, t5, t3, t4 = st.tabs(["👤 Individual", "🌐 Equipo", "🏢 Departamentos", "🗓️ Calendario", "📆 Semanal"])
+        t1, t2, t6, t5, t3, t4 = st.tabs(["👤 Individual", "🌐 Equipo", "👥 Semana por persona", "🏢 Departamentos",
+                                          "🗓️ Calendario", "📆 Semanal"])
         with t1:
             tab_individual(ctx, None, anio, mes, hoy, es_admin)
         with t2:
             tab_equipo(ctx, anio, mes)
+        with t6:
+            tab_personas(ctx, anio, mes)
         with t5:
             tab_departamentos(ctx, anio, mes)
         with t3:
@@ -741,20 +754,72 @@ def datos_equipo(ctx, anio, mes):
     return pd.DataFrame(filas)
 
 
-def seccion_semanal_personas(ctx, anio, mes):
-    """Semana por semana, persona por persona: quién está ocupado, en qué departamento y quién tiene margen."""
+ESTADO_COLOR = {"Ocupada": "#E63946", "Carga alta": "#F4A261", "Con margen": "#2D9C6B", "Sin datos": "#98A8B8"}
+
+
+def tarjeta_persona(r) -> str:
+    estado = calc.estado_carga(r["Ocupación %"], r["Capacidad (hs)"])
+    color = ESTADO_COLOR[estado]
+    ancho = 0 if estado == "Sin datos" else min(100, int(r["Ocupación %"]))
+    if estado == "Sin datos":
+        cuerpo = "Sin horas cargadas en esta semana"
+    else:
+        cuerpo = (f"Trabajo <b>{fmt_hs(float(r['Trabajo (hs)']))} hs</b> · Libre <b>{fmt_hs(float(r['Libre (hs)']))} hs</b>"
+                  f" · {int(r['Ocupación %'])}% ocupada")
+    dep = r["Departamento principal"]
+    linea_dep = ""
+    if dep:
+        linea_dep = (f'<div class="pcard-d">{C.ICONOS_DEPTO.get(dep, "📁")} {html.escape(dep)} · '
+                     f'{int(r["% en ese departamento"])}% de su semana</div>')
+    avisos = []
+    if float(r["Extra (hs)"]) > 0:
+        avisos.append(f"⏱️ {fmt_hs(float(r['Extra (hs)']))} hs extra")
+    if float(r["Ausencia (hs)"]) > 0:
+        avisos.append(f"🏖️ {fmt_hs(float(r['Ausencia (hs)']))} hs de ausencia")
+    if int(r["Días sin carga"]) > 0:
+        avisos.append(f"📅 {int(r['Días sin carga'])} día(s) sin cargar")
+    linea_av = "".join(f'<div class="pcard-w">{a}</div>' for a in avisos)
+    return (f'<div class="pcard" style="border-top:6px solid {color}">'
+            f'<div class="pcard-h"><b>{html.escape(str(r["Persona"]))}</b>'
+            f'<span class="chip" style="background:{color}">{estado}</span></div>'
+            f'<div class="pbar"><div style="width:{ancho}%; background:{color}"></div></div>'
+            f'<div class="pcard-n">{cuerpo}</div>{linea_dep}{linea_av}</div>')
+
+
+def tab_personas(ctx, anio, mes):
+    """Semana por semana, persona por persona: quién está ocupado, en qué departamento y quién puede ayudar."""
     reg, feriados = ctx["reg"], ctx["feriados"]
     horas_pp = calc.horas_por_persona(ctx["personas"])
     personas = list(horas_pp)
+    if not personas:
+        st.warning("No hay operarios activos en la hoja Personas.")
+        return
     sp = calc.semanal_por_persona(reg, anio, mes, horas_pp, feriados, hoy_ar())
     dp, semanas = calc.semanal_persona_departamento(reg, anio, mes, horas_pp)
-    seccion("Distribución semanal por persona")
     if sp.empty or float(sp["Capacidad (hs)"].sum()) == 0:
         st.info("Todavía no hay horas cargadas en este mes.")
         return
-    st.caption("Cada persona, semana por semana: cuánto trabajó, cuánto margen tuvo y en qué departamento. Solo cuentan "
-               "los días en que esa persona cargó horas (los días sin cargar no se toman como libres). "
-               "**Libre** = capacidad − trabajo.")
+    st.caption("Elegí una semana: cada tarjeta muestra qué tan ocupada estuvo la persona, cuánto margen tuvo y en qué "
+               "departamento trabajó. Solo cuentan los días en que esa persona cargó horas (un día sin cargar no se toma "
+               "como libre). **Libre** = capacidad − trabajo.")
+    con_datos = [x for x in semanas if float(sp[sp["Semana"] == x]["Capacidad (hs)"].sum()) > 0]
+    sel = st.selectbox("Semana", con_datos, index=len(con_datos) - 1, key="sp_sem")
+    t = sp[sp["Semana"] == sel].sort_values(["Libre (hs)", "Persona"], ascending=[False, True])
+    estados = {r["Persona"]: calc.estado_carga(r["Ocupación %"], r["Capacidad (hs)"]) for _, r in t.iterrows()}
+    ocupadas = [f"{r['Persona']} ({r['Departamento principal']})" if r["Departamento principal"] else r["Persona"]
+                for _, r in t.iterrows() if estados[r["Persona"]] == "Ocupada"]
+    margen = [f"{r['Persona']} ({fmt_hs(float(r['Libre (hs)']))} hs libres)"
+              for _, r in t.iterrows() if estados[r["Persona"]] == "Con margen" and float(r["Libre (hs)"]) > 0]
+    if ocupadas and margen:
+        st.info(f"👉 Ocupadas: {', '.join(ocupadas)}. Con margen para ayudar: {', '.join(margen)}.")
+    elif ocupadas:
+        st.warning(f"Ocupadas: {', '.join(ocupadas)}. Nadie con margen esa semana.")
+    else:
+        st.success("Nadie está al límite esa semana.")
+    st.markdown('<div class="pgrid">' + "".join(tarjeta_persona(r) for _, r in t.iterrows()) + "</div>",
+                unsafe_allow_html=True)
+
+    seccion("Todo el mes: persona por semana")
     z, texto = [], []
     for p in personas:
         fz, ft = [], []
@@ -765,36 +830,60 @@ def seccion_semanal_personas(ctx, anio, mes):
         z.append(fz)
         texto.append(ft)
     fig = go.Figure(go.Heatmap(
-        z=z, x=semanas, y=personas, text=texto, texttemplate="%{text}", zmin=0, zmax=100, colorscale=ESCALA_CARGA,
-        colorbar=dict(title="% ocupado"), hoverongaps=False, xgap=3, ygap=3))
+        z=z, x=[x.split(" (")[0] for x in semanas], y=personas, text=texto, texttemplate="%{text}", zmin=0, zmax=100,
+        colorscale=ESCALA_CARGA, colorbar=dict(title="% ocupada"), hoverongaps=False, xgap=3, ygap=3))
     fig.update_yaxes(autorange="reversed")
     estilo_fig(fig, max(240, 80 * len(personas) + 100))
     fig.update_layout(plot_bgcolor=GRIS_SIN_DATOS)
     st.plotly_chart(fig)
+    st.caption("Rojo = semana muy cargada, verde = con margen, gris = sin horas cargadas.")
 
     if not dp.empty:
-        st.markdown("**¿En qué departamentos trabajó cada persona?**")
-        dp = dp.copy()
-        cortas = {x: x.split(" (")[0] for x in semanas}
-        dp["Semana"] = dp["Semana"].map(cortas)
-        fig2 = px.bar(dp, x="Semana", y="Horas", color="Departamento", facet_col="Persona", facet_col_wrap=2,
-                      color_discrete_map=C.COLORES_DEPTO,
-                      category_orders={"Semana": list(cortas.values()), "Persona": personas})
-        fig2.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
-        fig2.update_xaxes(title=None)
-        st.plotly_chart(estilo_fig(fig2, 270 * math.ceil(len(personas) / 2) + 40))
+        with st.expander("¿En qué departamentos trabajó cada persona?"):
+            dp = dp.copy()
+            cortas = {x: x.split(" (")[0] for x in semanas}
+            dp["Semana"] = dp["Semana"].map(cortas)
+            fig2 = px.bar(dp, x="Semana", y="Horas", color="Departamento", facet_col="Persona", facet_col_wrap=2,
+                          color_discrete_map=C.COLORES_DEPTO,
+                          category_orders={"Semana": list(cortas.values()), "Persona": personas})
+            fig2.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+            fig2.update_xaxes(title=None)
+            st.plotly_chart(estilo_fig(fig2, 270 * math.ceil(len(personas) / 2) + 40))
+    with st.expander("Ver la tabla de la semana"):
+        cols = ["Persona", "Trabajo (hs)", "Disponible (hs)", "Libre (hs)", "Ocupación %", "Departamento principal",
+                "% en ese departamento", "Días sin carga"]
+        st.dataframe(t[cols], hide_index=True)
 
-    st.markdown("**¿Quién tiene margen para ayudar?**")
-    con_datos = [x for x in semanas if float(sp[sp["Semana"] == x]["Capacidad (hs)"].sum()) > 0]
-    sel = st.selectbox("Semana", con_datos, index=len(con_datos) - 1, key="sp_sem")
-    t = sp[sp["Semana"] == sel].sort_values(["Libre (hs)", "Persona"], ascending=[False, True])
-    top = t.iloc[0]
-    if float(top["Libre (hs)"]) > 0:
-        donde = f", sobre todo en {top['Departamento principal']}" if top["Departamento principal"] else ""
-        st.info(f"Con más margen en esa semana: {top['Persona']} ({fmt_hs(float(top['Libre (hs)']))} hs libres{donde}).")
-    cols = ["Persona", "Trabajo (hs)", "Disponible (hs)", "Libre (hs)", "Ocupación %", "Departamento principal",
-            "% en ese departamento", "Días sin carga"]
-    st.dataframe(t[cols], hide_index=True)
+
+def bloque_catalogo():
+    """Para el Admin: agrega al Sheet las tareas nuevas del catálogo de la app (nunca borra ni cambia nada)."""
+    with st.expander("🛠️ Catálogo (Admin)"):
+        msg = st.session_state.pop("cat_msg", None)
+        if msg:
+            st.success(msg)
+        st.caption("Compara el catálogo de la app con el de tu Sheet y agrega lo que falta. No borra ni cambia nada.")
+        if st.button("🔍 Buscar novedades", key="cat_buscar"):
+            st.session_state["cat_novedades"] = True
+        if st.session_state.get("cat_novedades"):
+            falta = calc.catalogo_faltante(leer(C.HOJA_CATALOGO), CATALOGO_SEED)
+            if falta.empty:
+                st.success("El catálogo está al día.")
+            else:
+                st.dataframe(falta[["Departamento", "Tarea", "Subtarea"]], hide_index=True)
+                st.caption(f"{len(falta)} fila(s) para agregar.")
+                if st.button("➕ Agregar estas filas", key="cat_agregar"):
+                    error = None
+                    try:
+                        get_store().agregar(C.HOJA_CATALOGO, falta.to_dict("records"))
+                        invalidar()
+                    except Exception as e:  # noqa: BLE001
+                        error = e
+                    if error:
+                        st.error(f"No se pudo agregar: {error}")
+                    else:
+                        st.session_state["cat_msg"] = f"✅ Se agregaron {len(falta)} fila(s) al catálogo."
+                        st.session_state.pop("cat_novedades", None)
+                        st.rerun()
 
 
 def tab_equipo(ctx, anio, mes):
@@ -808,8 +897,6 @@ def tab_equipo(ctx, anio, mes):
           (fmt_hs(tabla["Trabajo (hs)"].sum()), "Trabajo del equipo (hs)", "k-trab"),
           (fmt_hs(tabla["Disponible (hs)"].sum()), "Disponible (hs)", "k-disp"),
           (fmt_hs(tabla["Extra (hs)"].sum()), "Horas extra (hs)", "k-extra")])
-
-    seccion_semanal_personas(ctx, anio, mes)
 
     reg, feriados, cat = ctx["reg"], ctx["feriados"], ctx["cat"]
     horas_pp = calc.horas_por_persona(ctx["personas"])
@@ -1058,8 +1145,8 @@ La duración se elige con un toque (10 min, 15, 30, 45, 1 h, 1 h 30, 2 h, 3 h, 4
   El gris significa que nadie cargó horas ese día. Abajo, los días más cargados y quién puede ayudar un día puntual.
 - **Departamentos:** cuántas horas consume cada departamento en el mes (contra el mes anterior), la ventana de 3, 4 o 5 días
   más cargada de cada uno, un **PDF para la reunión con el contador** y una calculadora: «20 horas en 4 días, ¿alcanza con las horas libres del equipo?».
-- **Equipo → Distribución semanal por persona:** semana por semana, cuánto trabajó cada persona, cuánto margen tuvo y en qué
-  departamentos, para ver quién puede ayudar a quién.
+- **Semana por persona:** elegís una semana y cada tarjeta muestra qué tan ocupada estuvo cada persona, cuánto margen
+  tuvo y en qué departamento trabajó, para ver quién puede ayudar a quién. Abajo, el mes completo en una grilla.
 - **Quién completó el día:** arriba del Panel de control, el Admin ve quién cargó las horas del día (por defecto hoy).
 - **Semanal:** cuánto trabajo cae cada semana por departamento y cuántas horas libres tenía el equipo
   (capacidad − trabajo). Sirve para saber si un departamento puede absorber un pico o si conviene sumar gente.
@@ -1068,7 +1155,8 @@ La duración se elige con un toque (10 min, 15, 30, 45, 1 h, 1 h 30, 2 h, 3 h, 4
 """)
     with st.expander("🗂️ Para el Admin: Catálogo, Personas y Feriados"):
         st.markdown("""
-Se editan directamente en el Google Sheet:
+Se editan directamente en el Google Sheet (para sumar tareas nuevas del catálogo de la app usá el botón
+**🛠️ Catálogo** de la barra lateral: agrega lo que falta sin tocar lo demás):
 - **Catalogo:** Departamento, Tarea, Subtarea, Tipo (*Trabajo*, *Disponible* o *Ausencia*), Orden y Activo (SI/NO).
 - **Personas:** Nombre, Rol (*Operario* o *Admin*), Activo (SI/NO) y HorasDia. Para sumar a alguien: una fila nueva
   y su contraseña en Secrets, con el mismo nombre.
@@ -1117,6 +1205,8 @@ def main():
         if st.button("Cerrar sesión"):
             st.session_state.clear()
             st.rerun()
+        if es_admin:
+            bloque_catalogo()
 
     hero(usuario, es_admin, hoy_ar())
     if not es_admin and not pagina.startswith(("📚", "📜")):
