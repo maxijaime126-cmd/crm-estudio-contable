@@ -34,7 +34,7 @@ class TestCatalogo(unittest.TestCase):
     def test_semilla(self):
         df = pd.DataFrame(CATALOGO_SEED, columns=C.COLS_CATALOGO)
         self.assertEqual(df["Departamento"].nunique(), 10)      # 9 departamentos + GENERAL
-        self.assertEqual(len(df), 179)
+        self.assertEqual(len(df), 182)
         # Disponible y Ausencias existen una sola vez, en GENERAL (no en cada departamento)
         gen = df[df["Departamento"] == C.DEPTO_GENERAL]
         self.assertEqual(set(gen["Tarea"]), {"Disponible", "Ausencias"})
@@ -49,6 +49,9 @@ class TestCatalogo(unittest.TestCase):
         self.assertEqual(tipos["Gestión y mejoras del departamento"], C.TIPO_DISPONIBLE)
         self.assertEqual(tipos["Ausencias"], C.TIPO_AUSENCIA)
         self.assertEqual(tipos["Reuniones"], C.TIPO_TRABAJO)
+        met = df[(df["Departamento"] == "IMPUESTOS") & (df["Tarea"] == "Metodología individual")]
+        self.assertEqual(list(met["Subtarea"]), ["Armado", "Cambio de parámetro", "Actualización"])
+        self.assertTrue((met["Tipo"] == C.TIPO_TRABAJO).all())
 
 
 class TestFechas(unittest.TestCase):
@@ -194,11 +197,11 @@ class TestStore(unittest.TestCase):
         self.st.bootstrap()
 
     def test_bootstrap_crea_y_siembra_sin_duplicar(self):
-        self.assertEqual(len(self.st.leer(C.HOJA_CATALOGO)), 179)
+        self.assertEqual(len(self.st.leer(C.HOJA_CATALOGO)), 182)
         self.assertEqual(len(self.st.leer(C.HOJA_PERSONAS)), 5)
         self.assertGreaterEqual(len(self.st.leer(C.HOJA_FERIADOS)), 10)
         self.st.bootstrap()   # segunda vez no duplica
-        self.assertEqual(len(self.st.leer(C.HOJA_CATALOGO)), 179)
+        self.assertEqual(len(self.st.leer(C.HOJA_CATALOGO)), 182)
 
     def test_bootstrap_agrega_columnas_faltantes(self):
         self.st.hojas[C.HOJA_REGISTROS]["cols"].remove("Nota")
@@ -643,6 +646,59 @@ class TestMesEnCurso(unittest.TestCase):
         self.assertIn("El mes está en curso", inf["hallazgos"][0])
 
 
+class TestSemanalPorPersona(unittest.TestCase):
+    HP = {"Natalia": 6.0, "Athina": 6.0}
+
+    def datos(self):
+        filas = []
+        for d in ("05", "06", "07", "08"):
+            filas += [(f"2026-10-{d}", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 300),            # 5 hs
+                      (f"2026-10-{d}", "Natalia", "DOCUMENTACIÓN", "Carga de documentación", "Sociedades", 60),   # 1 h
+                      (f"2026-10-{d}", "Athina", "DOCUMENTACIÓN", "Carga de documentación", "Sociedades", 180),   # 3 hs
+                      (f"2026-10-{d}", "Athina", "GENERAL", "Disponible", "", 180)]
+        return registros(filas)
+
+    def test_quien_esta_ocupado_y_quien_tiene_margen(self):
+        r = calc.semanal_por_persona(self.datos(), 2026, 10, self.HP, FER, date(2026, 10, 9))
+        sem2 = r[r["Semana"].str.startswith("Sem 2")]
+        nat = sem2[sem2.Persona == "Natalia"].iloc[0]
+        ath = sem2[sem2.Persona == "Athina"].iloc[0]
+        self.assertEqual((nat["Capacidad (hs)"], nat["Trabajo (hs)"], nat["Libre (hs)"], nat["Ocupación %"]), (24.0, 24.0, 0.0, 100.0))
+        self.assertEqual((ath["Trabajo (hs)"], ath["Disponible (hs)"], ath["Libre (hs)"], ath["Ocupación %"]), (12.0, 12.0, 12.0, 50.0))
+        self.assertEqual((nat["Departamento principal"], nat["% en ese departamento"]), ("IMPUESTOS", 83.0))
+        self.assertEqual(ath["Departamento principal"], "DOCUMENTACIÓN")
+        self.assertEqual((nat["Días con carga"], nat["Días sin carga"]), (4, 0))        # el viernes 9 es hoy: no cuenta
+
+    def test_semanas_sin_carga_no_figuran_como_libres(self):
+        r = calc.semanal_por_persona(self.datos(), 2026, 10, self.HP, FER, date(2026, 10, 9))
+        sem1 = r[(r["Semana"].str.startswith("Sem 1")) & (r.Persona == "Natalia")].iloc[0]
+        self.assertEqual((sem1["Capacidad (hs)"], sem1["Libre (hs)"]), (0.0, 0.0))         # nadie cargó el 1 y 2 de octubre
+        self.assertEqual(sem1["Días sin carga"], 2)
+        self.assertTrue(sem1["Ocupación %"] != sem1["Ocupación %"])                         # sin datos: no hay %
+        sem3 = r[(r["Semana"].str.startswith("Sem 3")) & (r.Persona == "Natalia")].iloc[0]
+        self.assertEqual(sem3["Días sin carga"], 0)                                          # semana futura: no se reclama
+
+    def test_ausencia_baja_la_capacidad_de_la_semana(self):
+        reg = registros([("2026-10-05", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360),
+                         ("2026-10-06", "Natalia", "GENERAL", "Ausencias", "Vacaciones", 360)])
+        r = calc.semanal_por_persona(reg, 2026, 10, {"Natalia": 6.0}, FER, date(2026, 10, 9))
+        s2 = r[r["Semana"].str.startswith("Sem 2")].iloc[0]
+        self.assertEqual((s2["Capacidad (hs)"], s2["Ausencia (hs)"], s2["Libre (hs)"]), (6.0, 6.0, 0.0))
+
+    def test_horas_por_persona_y_departamento(self):
+        df, semanas = calc.semanal_persona_departamento(self.datos(), 2026, 10, self.HP)
+        self.assertEqual(len(semanas), 5)
+        nat = df[(df.Persona == "Natalia") & (df.Departamento == "IMPUESTOS")]["Horas"].sum()
+        self.assertEqual(nat, 20.0)
+        self.assertEqual(df[df.Persona == "Athina"]["Horas"].sum(), 12.0)                    # el Disponible no cuenta como trabajo
+
+    def test_orden_con_coma_decimal(self):
+        cat = pd.DataFrame([{"Departamento": "IMPUESTOS", "Tarea": "B", "Subtarea": "", "Tipo": "Trabajo", "Orden": "5,5", "Activo": "SI"},
+                            {"Departamento": "IMPUESTOS", "Tarea": "A", "Subtarea": "", "Tipo": "Trabajo", "Orden": "10", "Activo": "SI"},
+                            {"Departamento": "IMPUESTOS", "Tarea": "C", "Subtarea": "", "Tipo": "Trabajo", "Orden": "2", "Activo": "SI"}])
+        self.assertEqual(list(calc.catalogo_activo(cat)["Tarea"]), ["C", "B", "A"])
+
+
 class FakeWS:
     def __init__(self, title, ids):
         self.title, self.rows, self.col_count, self.id = title, [], 6, next(ids)
@@ -723,7 +779,7 @@ class TestBootstrapSheets(unittest.TestCase):
         n = {w.title: len(w.rows) for w in ss.hojas}
         S.SheetsStore(ss).bootstrap()
         self.assertEqual(n, {w.title: len(w.rows) for w in ss.hojas})
-        self.assertEqual(n["Catalogo"], 180)                     # encabezado + 179 filas
+        self.assertEqual(n["Catalogo"], 183)                     # encabezado + 182 filas
 
     def test_agrega_columnas_faltantes_sin_mover_las_existentes(self):
         ss = FakeSS()
