@@ -745,6 +745,56 @@ class TestSincronizarCatalogo(unittest.TestCase):
         self.assertEqual(calc.estado_carga(float("nan"), 0), "Sin datos")
 
 
+class TestPersonaPorDepartamento(unittest.TestCase):
+    def datos(self):
+        return registros([
+            ("2026-10-01", "Maximiliano", "DOCUMENTACIÓN", "Carga de documentación", "Sociedades", 180),         # sem 1: 3 hs
+            ("2026-10-02", "Maximiliano", "CONTABILIDAD", "Contabilidad rutinaria", "Asientos", 120),             # sem 1: 2 hs
+            ("2026-10-02", "Maximiliano", "GENERAL", "Disponible", "", 60),
+            ("2026-10-05", "Maximiliano", "CONTABILIDAD", "Contabilidad rutinaria", "Conciliaciones", 240),       # sem 2: 4 hs
+            ("2026-10-05", "Maximiliano", "CONTABILIDAD", "Contabilidad rutinaria", "Asientos", 60),              # sem 2: +1 h
+            ("2026-10-06", "Maximiliano", "DOCUMENTACIÓN", "Carga de documentación", "Sociedades", 60),           # sem 2: 1 h
+            ("2026-10-06", "Maximiliano", "DOCUMENTACIÓN", "Gestión y mejoras del departamento", "Capacitación", 120),
+            ("2026-10-07", "Maximiliano", "GENERAL", "Ausencias", "Inasistencia (día personal)", 360),
+            ("2026-10-05", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 600),                                 # otra persona
+        ])
+
+    def test_detalle_de_una_sola_persona(self):
+        det, semanas = calc.semanal_persona_detalle(self.datos(), "Maximiliano", 2026, 10)
+        self.assertEqual(len(semanas), 5)
+        self.assertNotIn("IMPUESTOS", set(det["Departamento"]))                    # no mezcla a Natalia
+        self.assertEqual(det[(det["Tipo"] == C.TIPO_TRABAJO)]["Horas"].sum(), 11.0)
+
+    def test_tabla_por_departamento_y_semana(self):
+        det, semanas = calc.semanal_persona_detalle(self.datos(), "Maximiliano", 2026, 10)
+        t = calc.tabla_persona_departamentos(det, semanas)
+        s1, s2 = semanas[0], semanas[1]
+        self.assertEqual(t.loc["DOCUMENTACIÓN", s1], 3.0)
+        self.assertEqual(t.loc["CONTABILIDAD", s1], 2.0)
+        self.assertEqual(t.loc["CONTABILIDAD", s2], 5.0)
+        self.assertEqual(t.loc["DOCUMENTACIÓN", s2], 1.0)
+        self.assertEqual((t.loc["CONTABILIDAD", "Mes"], t.loc["DOCUMENTACIÓN", "Mes"]), (7.0, 4.0))
+        self.assertEqual(t.index[0], "CONTABILIDAD")                                # el que más horas tiene va primero
+        self.assertEqual(t.loc["CONTABILIDAD", "% del trabajo"], round(7 / 11 * 100))
+        self.assertEqual((t.loc["TOTAL TRABAJO", s1], t.loc["TOTAL TRABAJO", s2], t.loc["TOTAL TRABAJO", "Mes"]), (5.0, 6.0, 11.0))
+        self.assertEqual(t.loc["Disponible y mejoras", "Mes"], 3.0)                 # 1 h libre + 2 h de capacitación
+        self.assertEqual(t.loc["Ausencias", "Mes"], 6.0)
+        self.assertEqual(list(t.index[-3:]), list(calc.FILAS_ESPECIALES))
+
+    def test_persona_sin_trabajo_no_rompe(self):
+        det, semanas = calc.semanal_persona_detalle(self.datos(), "Johana", 2026, 10)
+        self.assertTrue(det.empty)
+        t = calc.tabla_persona_departamentos(det, semanas)
+        self.assertEqual(list(t.index), list(calc.FILAS_ESPECIALES))
+        self.assertEqual(t.loc["TOTAL TRABAJO", "Mes"], 0.0)
+
+    def test_persona_con_solo_ausencias(self):
+        reg = registros([("2026-10-05", "Athina", "GENERAL", "Ausencias", "Vacaciones", 360)])
+        det, semanas = calc.semanal_persona_detalle(reg, "Athina", 2026, 10)
+        t = calc.tabla_persona_departamentos(det, semanas)
+        self.assertEqual((t.loc["TOTAL TRABAJO", "Mes"], t.loc["Ausencias", "Mes"]), (0.0, 6.0))
+
+
 class FakeWS:
     def __init__(self, title, ids):
         self.title, self.rows, self.col_count, self.id = title, [], 6, next(ids)
