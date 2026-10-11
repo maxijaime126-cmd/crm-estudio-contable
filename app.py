@@ -613,7 +613,18 @@ def pantalla_resumen(ctx: dict, usuario: str, es_admin: bool):
         with t4:
             tab_semanal(ctx, anio, mes)
     else:
-        tab_individual(ctx, usuario, anio, mes, hoy, es_admin)
+        t1, t2, t3, t4, t5 = st.tabs(["👤 Mi panel", "📅 Mi semana", "🏢 Mis departamentos", "🗓️ Mi calendario",
+                                      "📆 Mi semanal"])
+        with t1:
+            tab_individual(ctx, usuario, anio, mes, hoy, es_admin)
+        with t2:
+            tab_mi_semana(ctx, usuario, anio, mes)
+        with t3:
+            tab_mis_departamentos(ctx, usuario, anio, mes, hoy)
+        with t4:
+            tab_mi_calendario(ctx, usuario, anio, mes)
+        with t5:
+            tab_mi_semanal(ctx, usuario, anio, mes, hoy)
 
 
 def tab_individual(ctx, persona, anio, mes, hoy, es_admin):
@@ -790,6 +801,149 @@ PALETA_PERSONAS = ["#264653", "#2A9D8F", "#E9C46A", "#F4A261", "#E76F51", "#6A4C
 COLOR_DISPONIBLE, COLOR_AUSENCIA = "#9BD4F0", "#B8C0C8"
 
 
+def vista_persona_semanal(reg, persona, anio, mes):
+    """Horas de UNA persona por semana y departamento en el mes (con el detalle por tarea y subtarea)."""
+    periodo = f"{C.MESES_ES[mes]} {anio}"
+    det, sems = calc.semanal_persona_detalle(reg, persona, anio, mes)
+    if det.empty:
+        st.info(f"{persona} todavía no cargó horas en {periodo}.")
+        return
+    tabla = calc.tabla_persona_departamentos(det, sems)
+    con = [x for x in sems if (det["Semana"] == x).any()]
+    deps = [i for i in tabla.index if i not in calc.FILAS_ESPECIALES]
+    tarjetas = [(fmt_hs(float(tabla.loc["TOTAL TRABAJO", "Mes"])), "Trabajo del mes (hs)", "k-trab")]
+    if deps:
+        tarjetas.append((f"{fmt_hs(float(tabla.loc[deps[0], 'Mes']))} hs", f"Más tiempo: {deps[0]}", "k-cap"))
+    tarjetas += [(fmt_hs(float(tabla.loc["Disponible y mejoras", "Mes"])), "Disponible y mejoras (hs)", "k-disp"),
+                 (fmt_hs(float(tabla.loc["Ausencias", "Mes"])), "Ausencias (hs)", "k-aus")]
+    kpis(tarjetas)
+
+    seccion(f"{persona}: horas por departamento en cada semana")
+    fig = go.Figure()
+    for dep in deps:
+        fig.add_trace(go.Bar(name=etiqueta_depto(dep), x=con, y=[float(tabla.loc[dep, x]) for x in con],
+                             marker_color=C.COLORES_DEPTO.get(dep)))
+    for nombre, color in (("Disponible y mejoras", COLOR_DISPONIBLE), ("Ausencias", COLOR_AUSENCIA)):
+        ys = [float(tabla.loc[nombre, x]) for x in con]
+        if sum(ys) > 0:
+            fig.add_trace(go.Bar(name=nombre, x=con, y=ys, marker_color=color))
+    fig.update_layout(barmode="stack", yaxis_title="Horas")
+    st.plotly_chart(estilo_fig(fig, 420))
+    st.caption("Cada color es un departamento. En celeste y gris, el tiempo disponible (incluye gestión y mejoras) y las ausencias.")
+
+    seccion("Detalle por semana")
+    st.dataframe(tabla[con + ["Mes", "% del trabajo"]].reset_index(), hide_index=True)
+
+    if deps:
+        seccion(f"Horas de {persona} en el mes, por departamento")
+        g = pd.DataFrame({"Departamento": deps, "Horas": [float(tabla.loc[d, "Mes"]) for d in deps]}).sort_values("Horas")
+        fig2 = px.bar(g, x="Horas", y="Departamento", orientation="h", color="Departamento",
+                      color_discrete_map=C.COLORES_DEPTO, text=g["Horas"].round(1))
+        fig2.update_layout(showlegend=False, yaxis_title=None)
+        st.plotly_chart(estilo_fig(fig2, max(240, 40 * len(g) + 80)))
+
+    with st.expander("Detalle por tarea y subtarea"):
+        dep_sel = st.selectbox("Departamento", ["Todos"] + deps, key="sp_dep_tarea")
+        tr = det[det["Tipo"] == C.TIPO_TRABAJO]
+        if dep_sel != "Todos":
+            tr = tr[tr["Departamento"] == dep_sel]
+        if tr.empty:
+            st.caption("Sin trabajo cargado.")
+        else:
+            piv = (tr.pivot_table(index=["Departamento", "Tarea", "Subtarea"], columns="Semana", values="Horas",
+                                  aggfunc="sum", fill_value=0.0).reindex(columns=con, fill_value=0.0))
+            piv["Mes"] = piv.sum(axis=1)
+            piv = piv.sort_values("Mes", ascending=False).round(1).reset_index()
+            piv["Subtarea"] = piv["Subtarea"].replace("", "—")
+            st.dataframe(piv, hide_index=True)
+
+
+def tab_mi_semana(ctx, usuario, anio, mes):
+    """Cada integrante: sus horas por departamento en cada semana."""
+    vista_persona_semanal(ctx["reg"], usuario, anio, mes)
+
+
+def tab_mis_departamentos(ctx, usuario, anio, mes, hoy):
+    """Cada integrante: sus horas del mes por departamento, contra el mes anterior."""
+    reg = ctx["reg"]
+    periodo = f"{C.MESES_ES[mes]} {anio}"
+    res = calc.resumen_persona_departamentos(reg, usuario, anio, mes, hasta=hoy)
+    if res.empty:
+        st.info(f"Todavía no cargaste horas de trabajo en {periodo}.")
+        return
+    kpis([(fmt_hs(float(res["Horas"].sum())), "Tus horas de trabajo (hs)", "k-trab"),
+          (f"{fmt_hs(float(res.iloc[0]['Horas']))} hs", f"Más tiempo: {res.iloc[0]['Departamento']}", "k-cap"),
+          (str(len(res)), "Departamentos en los que trabajaste", "k-util")])
+    seccion(f"Tus horas por departamento — {periodo}")
+    g = res.sort_values("Horas")
+    fig = px.bar(g, x="Horas", y="Departamento", orientation="h", color="Departamento",
+                 color_discrete_map=C.COLORES_DEPTO, text=g["Horas"].round(1))
+    fig.update_layout(showlegend=False, yaxis_title=None)
+    st.plotly_chart(estilo_fig(fig, max(240, 40 * len(g) + 80)))
+    ini, fin = calc.rango_mes(anio, mes)
+    if hoy < fin:
+        st.caption(f"El mes está en curso: se compara con el mismo tramo del mes anterior (días 1 a {hoy.day}).")
+    st.dataframe(res, hide_index=True)
+
+    with st.expander("Detalle por tarea y subtarea"):
+        rm = reg[(reg["Persona"] == usuario) & (reg["Tipo"] == C.TIPO_TRABAJO)]
+        rm = rm[(rm["Fecha"].dt.date >= ini) & (rm["Fecha"].dt.date <= fin)]
+        dep_sel = st.selectbox("Departamento", ["Todos"] + list(res["Departamento"]), key="mi_dep_tarea")
+        if dep_sel != "Todos":
+            rm = rm[rm["Departamento"] == dep_sel]
+        det = rm.groupby(["Departamento", "Tarea", "Subtarea"], as_index=False)["Horas"].sum()
+        det["Subtarea"] = det["Subtarea"].replace("", "—")
+        det["% del total"] = (det["Horas"] / det["Horas"].sum() * 100).round(0)
+        det["Horas"] = det["Horas"].round(1)
+        st.dataframe(det.sort_values("Horas", ascending=False), hide_index=True)
+
+
+def tab_mi_calendario(ctx, usuario, anio, mes):
+    """Cada integrante: su mes día por día (solo sus horas)."""
+    reg, feriados = ctx["reg"], ctx["feriados"]
+    hd = calc.horas_por_persona(ctx["personas"]).get(usuario, C.HORAS_DIA_DEFAULT)
+    semanas, z, texto = calc.grilla_persona(reg, usuario, hd, feriados, anio, mes)
+    if not any(v == v for fila in z for v in fila):
+        st.info("Todavía no hay días con horas cargadas en este mes.")
+        return
+    n = 7 if any(fila[i] == fila[i] for fila in z for i in (5, 6)) else 5
+    fig = go.Figure(go.Heatmap(
+        z=[f[:n] for f in z], x=DIAS_LARGO[:n], y=semanas, text=[f[:n] for f in texto], texttemplate="%{text}",
+        textfont=dict(size=14), zmin=0, zmax=100, colorscale=ESCALA_CARGA, colorbar=dict(title="% de tu día"),
+        hoverongaps=False, xgap=3, ygap=3))
+    fig.update_yaxes(autorange="reversed")
+    fig.update_xaxes(side="top")
+    estilo_fig(fig, max(280, 100 * len(semanas) + 90))
+    fig.update_layout(plot_bgcolor=GRIS_SIN_DATOS, margin=dict(l=0, r=0, t=60, b=0))
+    st.plotly_chart(fig)
+    st.caption("Cada día muestra tus horas de trabajo. El color es qué parte de tu día usaste en trabajo (rojo = día completo "
+               "de trabajo, verde = mucho tiempo libre). Gris = sin datos, feriado o ausencia.")
+
+
+def tab_mi_semanal(ctx, usuario, anio, mes, hoy):
+    """Cada integrante: su capacidad, trabajo y horas libres semana por semana."""
+    reg, feriados = ctx["reg"], ctx["feriados"]
+    hd = calc.horas_por_persona(ctx["personas"]).get(usuario, C.HORAS_DIA_DEFAULT)
+    sp = calc.semanal_por_persona(reg, anio, mes, {usuario: hd}, feriados, hoy)
+    con = sp[sp["Capacidad (hs)"] > 0]
+    if con.empty:
+        st.info("Todavía no hay horas cargadas en este mes.")
+        return
+    semanas = list(con["Semana"])
+    seccion("Tus horas por semana")
+    fig = go.Figure()
+    for col, color in (("Trabajo (hs)", "#2D9C6B"), ("Disponible (hs)", COLOR_DISPONIBLE), ("Ausencia (hs)", COLOR_AUSENCIA)):
+        fig.add_trace(go.Bar(name=col.replace(" (hs)", ""), x=semanas, y=con[col].tolist(), marker_color=color))
+    fig.add_trace(go.Scatter(name="Tu capacidad", x=semanas, y=con["Capacidad (hs)"].tolist(), mode="lines+markers",
+                             line=dict(color="#1B2A38", dash="dash")))
+    fig.update_layout(barmode="stack", yaxis_title="Horas")
+    st.plotly_chart(estilo_fig(fig, 380))
+    st.caption("Solo cuentan los días en que cargaste horas. Libre = capacidad − trabajo.")
+    cols = ["Semana", "Capacidad (hs)", "Trabajo (hs)", "Disponible (hs)", "Ausencia (hs)", "Extra (hs)", "Libre (hs)",
+            "Ocupación %", "Días sin carga", "Departamento principal"]
+    st.dataframe(con[cols], hide_index=True)
+
+
 def tab_personas(ctx, anio, mes):
     """Semana por semana, persona por persona: quién está ocupado, en qué departamento y quién puede ayudar."""
     reg, feriados = ctx["reg"], ctx["feriados"]
@@ -812,60 +966,9 @@ def tab_personas(ctx, anio, mes):
                    "**Libre** = capacidad − trabajo.")
 
     if vista.startswith("👤"):
-        persona = st.selectbox("Persona", personas, key="sp_persona")
-        periodo = f"{C.MESES_ES[mes]} {anio}"
-        det, sems = calc.semanal_persona_detalle(reg, persona, anio, mes)
-        if det.empty:
-            st.info(f"{persona} todavía no cargó horas en {periodo}.")
-            return
-        tabla = calc.tabla_persona_departamentos(det, sems)
-        con = [x for x in sems if (det["Semana"] == x).any()]
-        deps = [i for i in tabla.index if i not in calc.FILAS_ESPECIALES]
-        tarjetas = [(fmt_hs(float(tabla.loc["TOTAL TRABAJO", "Mes"])), "Trabajo del mes (hs)", "k-trab")]
-        if deps:
-            tarjetas.append((f"{fmt_hs(float(tabla.loc[deps[0], 'Mes']))} hs", f"Más tiempo: {deps[0]}", "k-cap"))
-        tarjetas += [(fmt_hs(float(tabla.loc["Disponible y mejoras", "Mes"])), "Disponible y mejoras (hs)", "k-disp"),
-                     (fmt_hs(float(tabla.loc["Ausencias", "Mes"])), "Ausencias (hs)", "k-aus")]
-        kpis(tarjetas)
-
-        seccion(f"{persona}: horas por departamento en cada semana")
-        fig = go.Figure()
-        for dep in deps:
-            fig.add_trace(go.Bar(name=etiqueta_depto(dep), x=con, y=[float(tabla.loc[dep, x]) for x in con],
-                                 marker_color=C.COLORES_DEPTO.get(dep)))
-        for nombre, color in (("Disponible y mejoras", COLOR_DISPONIBLE), ("Ausencias", COLOR_AUSENCIA)):
-            ys = [float(tabla.loc[nombre, x]) for x in con]
-            if sum(ys) > 0:
-                fig.add_trace(go.Bar(name=nombre, x=con, y=ys, marker_color=color))
-        fig.update_layout(barmode="stack", yaxis_title="Horas")
-        st.plotly_chart(estilo_fig(fig, 420))
-        st.caption("Cada color es un departamento. En celeste y gris, el tiempo disponible (incluye gestión y mejoras) y las ausencias.")
-
-        seccion("Detalle por semana")
-        st.dataframe(tabla[con + ["Mes", "% del trabajo"]].reset_index(), hide_index=True)
-
-        if deps:
-            seccion(f"Horas de {persona} en el mes, por departamento")
-            g = pd.DataFrame({"Departamento": deps, "Horas": [float(tabla.loc[d, "Mes"]) for d in deps]}).sort_values("Horas")
-            fig2 = px.bar(g, x="Horas", y="Departamento", orientation="h", color="Departamento",
-                          color_discrete_map=C.COLORES_DEPTO, text=g["Horas"].round(1))
-            fig2.update_layout(showlegend=False, yaxis_title=None)
-            st.plotly_chart(estilo_fig(fig2, max(240, 40 * len(g) + 80)))
-
-        with st.expander("Detalle por tarea y subtarea"):
-            dep_sel = st.selectbox("Departamento", ["Todos"] + deps, key="sp_dep_tarea")
-            tr = det[det["Tipo"] == C.TIPO_TRABAJO]
-            if dep_sel != "Todos":
-                tr = tr[tr["Departamento"] == dep_sel]
-            if tr.empty:
-                st.caption("Sin trabajo cargado.")
-            else:
-                piv = (tr.pivot_table(index=["Departamento", "Tarea", "Subtarea"], columns="Semana", values="Horas",
-                                      aggfunc="sum", fill_value=0.0).reindex(columns=con, fill_value=0.0))
-                piv["Mes"] = piv.sum(axis=1)
-                piv = piv.sort_values("Mes", ascending=False).round(1).reset_index()
-                piv["Subtarea"] = piv["Subtarea"].replace("", "—")
-                st.dataframe(piv, hide_index=True)
+        i_persona = 0
+        persona = st.selectbox("Persona", personas, index=i_persona, key="sp_persona")
+        vista_persona_semanal(reg, persona, anio, mes)
 
     elif vista.startswith("📊"):
         seccion("Trabajo por semana y persona")
@@ -1016,7 +1119,7 @@ ESCALA_CARGA = [[0, "#d8f3dc"], [0.5, "#ffe8a3"], [1, "#e63946"]]
 GRIS_SIN_DATOS = "#E3E7EC"
 
 
-def tab_departamentos(ctx, anio, mes):
+def tab_departamentos(ctx, anio, mes, es_admin=True):
     """Cuántas horas consume cada departamento, sus picos y si el equipo puede absorberlos."""
     reg, feriados, cat = ctx["reg"], ctx["feriados"], ctx["cat"]
     horas_pp = calc.horas_por_persona(ctx["personas"])
@@ -1060,13 +1163,14 @@ def tab_departamentos(ctx, anio, mes):
         vv["Hasta"] = vv["Hasta"].map(lambda d: f"{DIAS_ES[d.weekday()]} {d:%d/%m}")
         st.dataframe(vv, hide_index=True)
 
-    seccion("📄 Informe para la reunión con el contador")
-    st.caption("Un PDF con las horas por departamento, los días saturados, el tiempo disponible y lo más importante "
-               "del mes, listo para mostrar. Si el mes está en curso, los números llegan hasta el último día cargado.")
-    boton_pdf(f"cont_{anio}_{mes}_{n}", "📄 Preparar informe para el contador",
-              lambda: pdf.pdf_departamentos(calc.informe_departamentos(
-                  reg, anio, mes, horas_pp, feriados, deptos, hoy_ar(), n)),
-              f"Informe_departamentos_{anio}-{mes:02d}.pdf")
+    if es_admin:
+        seccion("📄 Informe para la reunión con el contador")
+        st.caption("Un PDF con las horas por departamento, los días saturados, el tiempo disponible y lo más importante "
+                   "del mes, listo para mostrar. Si el mes está en curso, los números llegan hasta el último día cargado.")
+        boton_pdf(f"cont_{anio}_{mes}_{n}", "📄 Preparar informe para el contador",
+                  lambda: pdf.pdf_departamentos(calc.informe_departamentos(
+                      reg, anio, mes, horas_pp, feriados, deptos, hoy_ar(), n)),
+                  f"Informe_departamentos_{anio}-{mes:02d}.pdf")
 
     seccion("🧮 ¿Podemos absorber un pico?")
     st.caption(f"Por ejemplo: «un departamento necesita 20 horas en 4 días». Se compara con las horas libres que tuvo "
@@ -1232,6 +1336,9 @@ La duración se elige con un toque (10 min, 15, 30, 45, 1 h, 1 h 30, 2 h, 3 h, 4
 """)
     with st.expander("📊 Cómo leer el panel de control"):
         st.markdown("""
+- **Qué ve cada integrante:** solo lo suyo, en cinco pestañas: *Mi panel*, *Mi semana* (sus horas por departamento en cada
+  semana), *Mis departamentos* (sus horas del mes por departamento), *Mi calendario* y *Mi semanal*. Los paneles del equipo
+  (otras personas, departamentos, calendario del equipo, informes) son solo del Admin.
 - **Capacidad:** días hábiles × 6 hs, menos las ausencias.
 - **Utilización:** horas de trabajo sobre la capacidad. **Disponibilidad:** horas libres sobre la capacidad.
 - **Desvío:** compara tus horas del mes con el promedio de los 2 meses anteriores. Marca dónde cambió la carga; no es bueno ni malo.
