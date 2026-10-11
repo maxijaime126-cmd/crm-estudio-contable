@@ -795,6 +795,43 @@ class TestPersonaPorDepartamento(unittest.TestCase):
         self.assertEqual((t.loc["TOTAL TRABAJO", "Mes"], t.loc["Ausencias", "Mes"]), (0.0, 6.0))
 
 
+class TestPanelPersonal(unittest.TestCase):
+    def datos(self):
+        return registros([
+            ("2026-09-03", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 300),        # mes anterior, dentro del tramo
+            ("2026-09-20", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 600),        # mes anterior, fuera del tramo
+            ("2026-10-05", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360),
+            ("2026-10-06", "Natalia", "DOCUMENTACIÓN", "Carga de documentación", "Sociedades", 120),
+            ("2026-10-06", "Natalia", "GENERAL", "Disponible", "", 240),
+            ("2026-10-07", "Natalia", "GENERAL", "Ausencias", "Vacaciones", 360),
+            ("2026-10-05", "Athina", "SUELDOS", "Cargas sociales", "Control", 600),       # otra persona: no debe aparecer
+        ])
+
+    def test_resumen_solo_de_esa_persona(self):
+        r = calc.resumen_persona_departamentos(self.datos(), "Natalia", 2026, 10, hasta=date(2026, 10, 8))
+        self.assertEqual(list(r["Departamento"]), ["IMPUESTOS", "DOCUMENTACIÓN"])        # sin SUELDOS (es de Athina)
+        imp, doc = r.iloc[0], r.iloc[1]
+        self.assertEqual((imp["Horas"], imp["% del trabajo"]), (6.0, 75.0))
+        self.assertEqual((imp["Mes anterior (hs)"], imp["Variación %"]), (5.0, 20.0))    # mismo tramo: solo el 3/9
+        self.assertTrue(doc["Variación %"] != doc["Variación %"])
+
+    def test_resumen_de_una_persona_sin_horas(self):
+        r = calc.resumen_persona_departamentos(self.datos(), "Johana", 2026, 10)
+        self.assertTrue(r.empty)
+
+    def test_calendario_personal(self):
+        semanas, z, texto = calc.grilla_persona(self.datos(), "Natalia", 6.0, FER, 2026, 10)
+        self.assertEqual(len(semanas), 5)
+        self.assertEqual(z[1][0], 100.0)                                   # lun 5/10: 6 hs de 6
+        self.assertEqual(texto[1][0], "<b>5</b><br>6.0 hs")
+        self.assertAlmostEqual(z[1][1], 2 / 6 * 100, places=3)             # mar 6/10: 2 hs de 6 (y 4 hs libres)
+        self.assertTrue(z[1][2] != z[1][2])                                # mié 7/10: vacaciones: sin color
+        self.assertEqual(texto[1][2], "7<br>ausencia")
+        self.assertTrue(z[1][3] != z[1][3])                                # jue 8/10: sin datos
+        self.assertEqual(texto[2][0], "12<br>feriado")
+        self.assertEqual(texto[0][0], "")                                  # lunes 28/9: fuera del mes
+
+
 class FakeWS:
     def __init__(self, title, ids):
         self.title, self.rows, self.col_count, self.id = title, [], 6, next(ids)
