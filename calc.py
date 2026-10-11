@@ -920,3 +920,48 @@ def estado_carga(ocupacion: float, capacidad: float) -> str:
     if ocupacion >= C.UMBRAL_SATURADO:
         return "Ocupada"
     return "Carga alta" if ocupacion >= C.UMBRAL_ALTO else "Con margen"
+
+
+# ----------------------------------------------------------------------------
+# Una persona: horas por semana, departamento y tarea
+# ----------------------------------------------------------------------------
+FILAS_ESPECIALES = ("TOTAL TRABAJO", "Disponible y mejoras", "Ausencias")
+
+
+def semanal_persona_detalle(reg: pd.DataFrame, persona: str, anio: int, mes: int):
+    """Horas de una persona en el mes, por semana, tipo, departamento, tarea y subtarea.
+    Devuelve (DataFrame, lista de semanas en orden)."""
+    ini, fin = rango_mes(anio, mes)
+    semanas = semanas_del_mes(anio, mes)
+    rp = reg[(reg["Persona"] == persona) & (reg["Fecha"].dt.date >= ini) & (reg["Fecha"].dt.date <= fin)]
+    filas = []
+    for etiqueta, a, b in semanas:
+        r = rp[(rp["Fecha"].dt.date >= a) & (rp["Fecha"].dt.date <= b)]
+        g = r.groupby(["Tipo", "Departamento", "Tarea", "Subtarea"])["Horas"].sum()
+        filas += [{"Semana": etiqueta, "Tipo": tipo, "Departamento": dep, "Tarea": tarea, "Subtarea": sub,
+                   "Horas": round(float(h), 1)} for (tipo, dep, tarea, sub), h in g.items()]
+    cols = ["Semana", "Tipo", "Departamento", "Tarea", "Subtarea", "Horas"]
+    return pd.DataFrame(filas, columns=cols), [x[0] for x in semanas]
+
+
+def tabla_persona_departamentos(det: pd.DataFrame, semanas: list[str]) -> pd.DataFrame:
+    """Filas: un departamento por fila (solo trabajo, el que más horas tiene primero), después
+    'TOTAL TRABAJO', 'Disponible y mejoras' y 'Ausencias'. Columnas: cada semana, 'Mes' y '% del trabajo'."""
+    cols = list(semanas)
+    tr = det[det["Tipo"] == C.TIPO_TRABAJO]
+    if tr.empty:
+        t = pd.DataFrame(columns=cols, dtype=float)
+        t.index.name = "Departamento"
+    else:
+        t = (tr.pivot_table(index="Departamento", columns="Semana", values="Horas", aggfunc="sum", fill_value=0.0)
+             .reindex(columns=cols, fill_value=0.0))
+    t = t.assign(Mes=t.sum(axis=1)).sort_values("Mes", ascending=False)
+    total = t.sum(axis=0)
+    out = t.copy()
+    out["% del trabajo"] = (out["Mes"] / total["Mes"] * 100).round(0) if total["Mes"] > 0 else 0.0
+    out.loc["TOTAL TRABAJO"] = [float(total[c]) for c in cols] + [float(total["Mes"]), 100.0 if total["Mes"] > 0 else 0.0]
+    for nombre, tipo in (("Disponible y mejoras", C.TIPO_DISPONIBLE), ("Ausencias", C.TIPO_AUSENCIA)):
+        sx = det[det["Tipo"] == tipo].groupby("Semana")["Horas"].sum().reindex(cols, fill_value=0.0)
+        out.loc[nombre] = list(sx.values) + [float(sx.sum()), float("nan")]
+    out.index.name = "Departamento"
+    return out.round(1)
