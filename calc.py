@@ -965,3 +965,66 @@ def tabla_persona_departamentos(det: pd.DataFrame, semanas: list[str]) -> pd.Dat
         out.loc[nombre] = list(sx.values) + [float(sx.sum()), float("nan")]
     out.index.name = "Departamento"
     return out.round(1)
+
+
+# ----------------------------------------------------------------------------
+# Paneles personales: lo que ve cada integrante de sí mismo
+# ----------------------------------------------------------------------------
+def resumen_persona_departamentos(reg: pd.DataFrame, persona: str, anio: int, mes: int,
+                                  hasta: date | None = None) -> pd.DataFrame:
+    """Horas de trabajo de UNA persona por departamento en el mes, con su peso y la comparación con el mes
+    anterior en el mismo tramo (si el mes está en curso, del día 1 al mismo número de día)."""
+    ini, fin = rango_mes(anio, mes)
+    tope = min(fin, hasta) if hasta is not None else fin
+    base = reg[(reg["Persona"] == persona) & (reg["Tipo"] == C.TIPO_TRABAJO)]
+    act = base[(base["Fecha"].dt.date >= ini) & (base["Fecha"].dt.date <= tope)].groupby("Departamento")["Horas"].sum()
+    a2, m2 = meses_atras(anio, mes, 2)[0]
+    ini2, fin2 = rango_mes(a2, m2)
+    tope2 = date(a2, m2, min(tope.day, fin2.day)) if tope < fin else fin2
+    prev = base[(base["Fecha"].dt.date >= ini2) & (base["Fecha"].dt.date <= tope2)].groupby("Departamento")["Horas"].sum()
+    out = pd.DataFrame({"Horas": act, "Mes anterior (hs)": prev}).fillna(0.0)
+    total = float(out["Horas"].sum())
+    out["% del trabajo"] = (out["Horas"] / total * 100).round(0) if total > 0 else 0.0
+    out["Variación %"] = ((out["Horas"] - out["Mes anterior (hs)"]) / out["Mes anterior (hs)"] * 100
+                          ).where(out["Mes anterior (hs)"] > 0).round(0)
+    out = out.round(1).sort_values("Horas", ascending=False, kind="stable")
+    out.index.name = "Departamento"
+    return out.reset_index()[["Departamento", "Horas", "% del trabajo", "Mes anterior (hs)", "Variación %"]]
+
+
+def grilla_persona(reg: pd.DataFrame, persona: str, horas_dia: float, feriados: set, anio: int, mes: int):
+    """Calendario de UNA persona: (etiquetas de semana, z, texto), matrices semanas x 7 (lun a dom).
+    z = % de su capacidad del día usado en trabajo (NaN = sin datos, feriado o día de ausencia)."""
+    ini, fin = rango_mes(anio, mes)
+    rp = reg[(reg["Persona"] == persona) & (reg["Fecha"].dt.date >= ini) & (reg["Fecha"].dt.date <= fin)]
+    det = por_dia(rp, horas_dia, feriados, ini, fin)
+    con_datos = set(rp["Fecha"].dt.date)
+    semanas = semanas_del_mes(anio, mes)
+    nan = float("nan")
+    z, texto = [], []
+    for _, a, _b in semanas:
+        lunes = a - timedelta(days=a.weekday())
+        fz, ft = [], []
+        for i in range(7):
+            d = lunes + timedelta(days=i)
+            if d < ini or d > fin:
+                fz.append(nan)
+                ft.append("")
+                continue
+            r = det.loc[pd.Timestamp(d)]
+            trabajo, cap = float(r[C.TIPO_TRABAJO]), float(r["Capacidad"])
+            if d in feriados and trabajo == 0:
+                fz.append(nan)
+                ft.append(f"{d.day}<br>feriado")
+            elif d not in con_datos:
+                fz.append(nan)
+                ft.append(f"{d.day}")
+            elif float(r[C.TIPO_AUSENCIA]) > 0 and trabajo == 0 and cap == 0:
+                fz.append(nan)
+                ft.append(f"{d.day}<br>ausencia")
+            else:
+                fz.append(min(100.0, trabajo / cap * 100) if cap > 0 else (100.0 if trabajo > 0 else nan))
+                ft.append(f"<b>{d.day}</b>" + (f"<br>{trabajo:.1f} hs" if trabajo > 0 else ""))
+        z.append(fz)
+        texto.append(ft)
+    return [x[0] for x in semanas], z, texto
