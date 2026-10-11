@@ -787,6 +787,7 @@ def tarjeta_persona(r) -> str:
 
 
 PALETA_PERSONAS = ["#264653", "#2A9D8F", "#E9C46A", "#F4A261", "#E76F51", "#6A4C93"]
+COLOR_DISPONIBLE, COLOR_AUSENCIA = "#9BD4F0", "#B8C0C8"
 
 
 def tab_personas(ctx, anio, mes):
@@ -804,12 +805,69 @@ def tab_personas(ctx, anio, mes):
         return
     con_datos = [x for x in semanas if float(sp[sp["Semana"] == x]["Capacidad (hs)"].sum()) > 0]
     colores = {p: PALETA_PERSONAS[i % len(PALETA_PERSONAS)] for i, p in enumerate(personas)}
-    vista = st.radio("Mostrar", ["📊 Trabajo por semana", "🤝 Quién puede ayudar", "🗓️ Mes completo"],
+    vista = st.radio("Mostrar", ["👤 Una persona", "📊 Equipo por semana", "🤝 Quién puede ayudar", "🗓️ Mes completo"],
                      horizontal=True, key="sp_vista")
-    st.caption("Solo cuentan los días en que cada persona cargó horas (un día sin cargar no se toma como libre). "
-               "**Libre** = capacidad − trabajo.")
+    if not vista.startswith("👤"):
+        st.caption("Solo cuentan los días en que cada persona cargó horas (un día sin cargar no se toma como libre). "
+                   "**Libre** = capacidad − trabajo.")
 
-    if vista.startswith("📊"):
+    if vista.startswith("👤"):
+        persona = st.selectbox("Persona", personas, key="sp_persona")
+        periodo = f"{C.MESES_ES[mes]} {anio}"
+        det, sems = calc.semanal_persona_detalle(reg, persona, anio, mes)
+        if det.empty:
+            st.info(f"{persona} todavía no cargó horas en {periodo}.")
+            return
+        tabla = calc.tabla_persona_departamentos(det, sems)
+        con = [x for x in sems if (det["Semana"] == x).any()]
+        deps = [i for i in tabla.index if i not in calc.FILAS_ESPECIALES]
+        tarjetas = [(fmt_hs(float(tabla.loc["TOTAL TRABAJO", "Mes"])), "Trabajo del mes (hs)", "k-trab")]
+        if deps:
+            tarjetas.append((f"{fmt_hs(float(tabla.loc[deps[0], 'Mes']))} hs", f"Más tiempo: {deps[0]}", "k-cap"))
+        tarjetas += [(fmt_hs(float(tabla.loc["Disponible y mejoras", "Mes"])), "Disponible y mejoras (hs)", "k-disp"),
+                     (fmt_hs(float(tabla.loc["Ausencias", "Mes"])), "Ausencias (hs)", "k-aus")]
+        kpis(tarjetas)
+
+        seccion(f"{persona}: horas por departamento en cada semana")
+        fig = go.Figure()
+        for dep in deps:
+            fig.add_trace(go.Bar(name=etiqueta_depto(dep), x=con, y=[float(tabla.loc[dep, x]) for x in con],
+                                 marker_color=C.COLORES_DEPTO.get(dep)))
+        for nombre, color in (("Disponible y mejoras", COLOR_DISPONIBLE), ("Ausencias", COLOR_AUSENCIA)):
+            ys = [float(tabla.loc[nombre, x]) for x in con]
+            if sum(ys) > 0:
+                fig.add_trace(go.Bar(name=nombre, x=con, y=ys, marker_color=color))
+        fig.update_layout(barmode="stack", yaxis_title="Horas")
+        st.plotly_chart(estilo_fig(fig, 420))
+        st.caption("Cada color es un departamento. En celeste y gris, el tiempo disponible (incluye gestión y mejoras) y las ausencias.")
+
+        seccion("Detalle por semana")
+        st.dataframe(tabla[con + ["Mes", "% del trabajo"]].reset_index(), hide_index=True)
+
+        if deps:
+            seccion(f"Horas de {persona} en el mes, por departamento")
+            g = pd.DataFrame({"Departamento": deps, "Horas": [float(tabla.loc[d, "Mes"]) for d in deps]}).sort_values("Horas")
+            fig2 = px.bar(g, x="Horas", y="Departamento", orientation="h", color="Departamento",
+                          color_discrete_map=C.COLORES_DEPTO, text=g["Horas"].round(1))
+            fig2.update_layout(showlegend=False, yaxis_title=None)
+            st.plotly_chart(estilo_fig(fig2, max(240, 40 * len(g) + 80)))
+
+        with st.expander("Detalle por tarea y subtarea"):
+            dep_sel = st.selectbox("Departamento", ["Todos"] + deps, key="sp_dep_tarea")
+            tr = det[det["Tipo"] == C.TIPO_TRABAJO]
+            if dep_sel != "Todos":
+                tr = tr[tr["Departamento"] == dep_sel]
+            if tr.empty:
+                st.caption("Sin trabajo cargado.")
+            else:
+                piv = (tr.pivot_table(index=["Departamento", "Tarea", "Subtarea"], columns="Semana", values="Horas",
+                                      aggfunc="sum", fill_value=0.0).reindex(columns=con, fill_value=0.0))
+                piv["Mes"] = piv.sum(axis=1)
+                piv = piv.sort_values("Mes", ascending=False).round(1).reset_index()
+                piv["Subtarea"] = piv["Subtarea"].replace("", "—")
+                st.dataframe(piv, hide_index=True)
+
+    elif vista.startswith("📊"):
         seccion("Trabajo por semana y persona")
         fig = go.Figure()
         for p in personas:
@@ -1186,9 +1244,9 @@ La duración se elige con un toque (10 min, 15, 30, 45, 1 h, 1 h 30, 2 h, 3 h, 4
   El gris significa que nadie cargó horas ese día. Abajo, los días más cargados y quién puede ayudar un día puntual.
 - **Departamentos:** cuántas horas consume cada departamento en el mes (contra el mes anterior), la ventana de 3, 4 o 5 días
   más cargada de cada uno, un **PDF para la reunión con el contador** y una calculadora: «20 horas en 4 días, ¿alcanza con las horas libres del equipo?».
-- **Semana por persona:** tres vistas. *Trabajo por semana* (barras apiladas por persona, igual que la vista por
-  departamento, más las horas libres y un resumen); *Quién puede ayudar* (una tarjeta por persona para la semana que elijas);
-  y *Mes completo* (grilla de persona por semana y departamentos de cada una).
+- **Semana por persona:** cuatro vistas. *Una persona*: elegís a alguien y ves, semana por semana, cuántas horas dedicó a cada
+  departamento en el mes (con el detalle por tarea y subtarea). *Equipo por semana*: barras apiladas por persona, horas libres y
+  un resumen. *Quién puede ayudar*: una tarjeta por persona para la semana que elijas. *Mes completo*: grilla de persona por semana.
 - **Quién completó el día:** arriba del Panel de control, el Admin ve quién cargó las horas del día (por defecto hoy).
 - **Semanal:** cuánto trabajo cae cada semana por departamento y cuántas horas libres tenía el equipo
   (capacidad − trabajo). Sirve para saber si un departamento puede absorber un pico o si conviene sumar gente.
