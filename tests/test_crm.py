@@ -509,7 +509,7 @@ class TestCargaPorDepartamento(unittest.TestCase):
         imp = v[v.Departamento == "IMPUESTOS"].iloc[0]
         self.assertEqual((imp["Desde"], imp["Hasta"], imp["Horas"]), (date(2026, 10, 5), date(2026, 10, 8), 24.0))
         self.assertEqual(imp["Personas equivalentes"], 1.0)
-        self.assertEqual(imp["Lectura"], "✅ Una persona alcanza")
+        self.assertEqual(imp["Lectura"], "✅ Alcanza con su equipo")
 
     def test_ventana_necesita_ayuda_y_el_equipo_la_cubre(self):
         reg = registros(
@@ -832,6 +832,118 @@ class TestPanelPersonal(unittest.TestCase):
         self.assertEqual(texto[0][0], "")                                  # lunes 28/9: fuera del mes
 
 
+class TestSenalYTendencia(unittest.TestCase):
+    HP = {"Natalia": 6.0, "Johana": 6.0, "Athina": 6.0}
+    DEPS = ["IMPUESTOS", "DOCUMENTACIÓN", "SUELDOS"]
+    DIAS = ("05", "06", "07", "08")
+
+    def impuestos_con_dos_personas(self):
+        filas = []
+        for d in self.DIAS:
+            filas += [(f"2026-10-{d}", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360),
+                      (f"2026-10-{d}", "Johana", "IMPUESTOS", "IIBB mensual", "Control", 360),
+                      (f"2026-10-{d}", "Athina", "DOCUMENTACIÓN", "Carga de documentación", "Sociedades", 180)]
+        return registros(filas)
+
+    def test_personas_por_departamento(self):
+        df = pd.DataFrame({"Departamento": ["Impuestos", "DOCUMENTACIÓN", "SUELDOS"], "Personas": ["2", "1,5", "x"]})
+        r = calc.personas_por_departamento(df, self.DEPS + ["TRÁMITES"])
+        self.assertEqual((r["IMPUESTOS"], r["DOCUMENTACIÓN"], r["SUELDOS"], r["TRÁMITES"]), (2.0, 1.5, 1.0, 1.0))
+
+    def test_dos_personas_en_impuestos_no_es_saturacion(self):
+        reg = self.impuestos_con_dos_personas()
+        s = calc.senal_departamentos(reg, 2026, 10, self.HP, FER, self.DEPS, {"IMPUESTOS": 2.0})
+        imp = s[s.Departamento == "IMPUESTOS"].iloc[0]
+        self.assertEqual((imp["Horas"], imp["Capacidad del depto. (hs)"], imp["Ocupación %"]), (48.0, 48.0, 100.0))
+        self.assertEqual(imp["Señal"], "🟢 Sin presión")
+        self.assertEqual(imp["Semanas sobre su capacidad"], 0)
+        doc = s[s.Departamento == "DOCUMENTACIÓN"].iloc[0]
+        self.assertEqual(doc["Ocupación %"], 50.0)
+
+    def test_si_se_ignora_que_son_dos_la_señal_cambia(self):
+        reg = self.impuestos_con_dos_personas()
+        s = calc.senal_departamentos(reg, 2026, 10, self.HP, FER, self.DEPS, {"IMPUESTOS": 1.0})
+        imp = s[s.Departamento == "IMPUESTOS"].iloc[0]
+        self.assertEqual(imp["Faltan por semana (hs)"], 24.0)                       # 48 hs contra 24 de una persona
+        self.assertEqual(imp["Equivalente en personas"], round(24 / 30, 2))         # una semana completa son 5 x 6 hs
+        self.assertEqual(imp["Señal"], "🔴 Falta capacidad")                         # el resto del equipo solo tenía 12 hs libres
+
+    def test_exceso_que_el_resto_del_equipo_puede_cubrir(self):
+        filas = [(f"2026-10-{d}", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360) for d in self.DIAS]
+        filas += [(f"2026-10-{d}", "Johana", "IMPUESTOS", "IIBB mensual", "Control", 120) for d in ("05", "06")]
+        filas += [(f"2026-10-{d}", "Athina", "DOCUMENTACIÓN", "Carga de documentación", "Sociedades", 180) for d in self.DIAS]
+        s = calc.senal_departamentos(registros(filas), 2026, 10, self.HP, FER, self.DEPS, {"IMPUESTOS": 1.0})
+        imp = s[s.Departamento == "IMPUESTOS"].iloc[0]
+        self.assertEqual(imp["Faltan por semana (hs)"], 4.0)                        # 28 hs contra 24
+        self.assertEqual(imp["Señal"], "🟡 Se cubre con ayuda del equipo")          # al equipo le sobraban 32 hs
+
+    def test_tendencia_mes_completo_y_mes_en_curso(self):
+        reg = registros([("2026-09-03", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 300),
+                         ("2026-09-10", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 600)]
+                        + [(f"2026-10-{d}", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360) for d in self.DIAS]
+                        + [(f"2026-10-{d}", "Johana", "IMPUESTOS", "IIBB mensual", "Control", 360) for d in self.DIAS])
+        df, meses = calc.tendencia_departamentos_equipo(reg, 2026, 10, self.HP, FER, ["IMPUESTOS"], {"IMPUESTOS": 2.0}, 6)
+        self.assertEqual(meses, ["Sep 2026", "Oct 2026 (en curso)"])                # agosto no tiene datos: no figura
+        sep = df[(df.Mes == "Sep 2026")].iloc[0]
+        octu = df[(df.Mes == "Oct 2026 (en curso)")].iloc[0]
+        self.assertEqual((sep["Horas"], sep["Ocupación %"]), (15.0, round(15 / (2 * 22 * 6) * 100)))
+        self.assertEqual((octu["Horas"], octu["Ocupación %"]), (48.0, round(48 / (2 * 6 * 6) * 100)))   # hasta el 8/10: 6 días hábiles
+
+    def test_extras_por_persona_y_departamento(self):
+        reg = registros([
+            ("2026-10-05", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360),
+            ("2026-10-05", "Natalia", "DOCUMENTACIÓN", "Carga de documentación", "Sociedades", 120),   # 8 hs: 2 de extra
+            ("2026-10-10", "Athina", "SUELDOS", "Cargas sociales", "Control", 180),                     # sábado: 3 de extra
+            ("2026-10-06", "Johana", "IMPUESTOS", "IIBB mensual", "Control", 300),                      # sin extra
+        ])
+        e = calc.extras_por_departamento_persona(reg, 2026, 10, self.HP, FER)
+        pares = {(r.Persona, r.Departamento): r._3 for r in e.itertuples()}
+        self.assertEqual(pares[("Natalia", "IMPUESTOS")], 1.5)
+        self.assertEqual(pares[("Natalia", "DOCUMENTACIÓN")], 0.5)
+        self.assertEqual(pares[("Athina", "SUELDOS")], 3.0)
+        self.assertNotIn("Johana", set(e["Persona"]))
+        self.assertEqual(e["Extra (hs)"].sum(), 5.0)
+        self.assertTrue(calc.extras_por_departamento_persona(registros([]), 2026, 10, self.HP, FER).empty)
+
+    def test_matriz_persona_departamento(self):
+        reg = registros([("2026-10-05", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 360),
+                         ("2026-10-05", "Natalia", "DOCUMENTACIÓN", "Carga de documentación", "Sociedades", 120),
+                         ("2026-10-06", "Athina", "SUELDOS", "Cargas sociales", "Control", 180),
+                         ("2026-10-06", "Athina", "GENERAL", "Disponible", "", 120)])
+        m = calc.matriz_persona_departamento(reg, 2026, 10, self.HP)
+        self.assertEqual(list(m.index), ["Natalia", "Johana", "Athina"])
+        self.assertEqual((m.loc["Natalia", "IMPUESTOS"], m.loc["Natalia", "Total"], m.loc["Athina", "Total"]), (6.0, 8.0, 3.0))
+        self.assertEqual(m.loc["Johana", "Total"], 0.0)                              # el Disponible no cuenta
+        self.assertEqual(m.columns[0], "IMPUESTOS")                                   # el departamento con más horas, primero
+
+    def test_resumen_con_personas_del_departamento(self):
+        reg = self.impuestos_con_dos_personas()
+        r = calc.resumen_departamentos_mes(reg, 2026, 10, self.HP, FER, self.DEPS, hasta=date(2026, 10, 8),
+                                           personas_dep={"IMPUESTOS": 2.0})
+        imp = r[r.Departamento == "IMPUESTOS"].iloc[0]
+        self.assertEqual((imp["Personas del depto."], imp["Ocupación del depto. %"]), (2.0, round(48 / (2 * 6 * 6) * 100)))
+
+    def test_picos_se_miden_contra_el_equipo_del_departamento(self):
+        reg = self.impuestos_con_dos_personas()
+        con_dos = calc.ventanas_pico(reg, 2026, 10, self.HP, FER, self.DEPS, 4, {"IMPUESTOS": 2.0})
+        con_uno = calc.ventanas_pico(reg, 2026, 10, self.HP, FER, self.DEPS, 4)
+        self.assertEqual(con_dos[con_dos.Departamento == "IMPUESTOS"].iloc[0]["Lectura"], "✅ Alcanza con su equipo")
+        self.assertNotEqual(con_uno[con_uno.Departamento == "IMPUESTOS"].iloc[0]["Lectura"], "✅ Alcanza con su equipo")
+
+
+class TestHojaDepartamentos(unittest.TestCase):
+    def test_se_crea_sola_con_impuestos_en_dos(self):
+        st_ = S.MemoryStore()
+        st_.bootstrap()
+        df = st_.leer(C.HOJA_DEPARTAMENTOS)
+        self.assertEqual(len(df), 9)
+        self.assertEqual(df[df.Departamento == "IMPUESTOS"]["Personas"].iloc[0], "2")
+        self.assertEqual(df[df.Departamento == "SUELDOS"]["Personas"].iloc[0], "1")
+        self.assertNotIn("GENERAL", set(df["Departamento"]))
+        st_.bootstrap()
+        self.assertEqual(len(st_.leer(C.HOJA_DEPARTAMENTOS)), 9)                 # no duplica
+
+
 class FakeWS:
     def __init__(self, title, ids):
         self.title, self.rows, self.col_count, self.id = title, [], 6, next(ids)
@@ -896,7 +1008,7 @@ class TestBootstrapSheets(unittest.TestCase):
         self.assertEqual(fer.rows[0], ["Fecha", "Motivo"])      # normaliza el encabezado
         self.assertEqual(len(fer.rows), 2)                       # no pisa ni siembra: ya tenía datos
         self.assertEqual({w.title for w in ss.hojas},
-                         {"Catalogo", "Personas", "Registros", "feriados"})
+                         {"Catalogo", "Personas", "Registros", "feriados", "Departamentos"})
 
     def test_carrera_entre_sesiones(self):
         ss = FakeSS(carrera={"Feriados"})
