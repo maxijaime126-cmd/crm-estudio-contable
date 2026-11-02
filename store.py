@@ -40,6 +40,9 @@ def filas_semilla(hoja: str) -> list[dict]:
         return [dict(zip(C.COLS_CATALOGO, f)) for f in CATALOGO_SEED]
     if hoja == C.HOJA_PERSONAS:
         return [dict(zip(C.COLS_PERSONAS, f)) for f in C.PERSONAS_SEED]
+    if hoja == C.HOJA_DEPARTAMENTOS:
+        deps = list(dict.fromkeys(f[0] for f in CATALOGO_SEED if f[0] != C.DEPTO_GENERAL))
+        return [{"Departamento": d, "Personas": C.PERSONAS_POR_DEPARTAMENTO_SEED.get(d, 1)} for d in deps]
     if hoja == C.HOJA_FERIADOS:
         filas = []
         for ruta in sorted(glob.glob(os.path.join(BASE_DIR, "feriados_*.csv"))):
