@@ -580,7 +580,8 @@ def _hd_prom(horas_personas: dict) -> float:
 
 
 def resumen_departamentos_mes(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict,
-                              feriados: set, departamentos: list[str], hasta: date | None = None) -> pd.DataFrame:
+                              feriados: set, departamentos: list[str], hasta: date | None = None,
+                              personas_dep: dict | None = None) -> pd.DataFrame:
     """Horas de trabajo de cada departamento en el mes, su peso, y la comparación con el mes anterior.
     'Personas equivalentes' = horas / (días hábiles x horas por día): cuántas personas a tiempo
     completo hicieron falta. Con 'hasta' el mes se corta en ese día y el mes anterior se compara en el
@@ -607,24 +608,31 @@ def resumen_departamentos_mes(reg: pd.DataFrame, anio: int, mes: int, horas_pers
     })
     out["Variación %"] = ((out["Horas"] - out["Mes anterior (hs)"]) / out["Mes anterior (hs)"] * 100
                           ).where(out["Mes anterior (hs)"] > 0).round(0)
+    if personas_dep is not None:
+        pers = pd.Series([float(personas_dep.get(d, 1.0)) for d in out["Departamento"]])
+        cap_dep = pers * dias_hab * _hd_prom(horas_personas)
+        out.insert(2, "Personas del depto.", pers.round(1).to_numpy())
+        out.insert(3, "Ocupación del depto. %", (out["Horas"] / cap_dep * 100).where(cap_dep > 0).round(0).to_numpy())
     return out.sort_values("Horas", ascending=False, kind="stable").reset_index(drop=True)
 
 
 def ventanas_pico(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict, feriados: set,
-                  departamentos: list[str], n_dias: int = 4) -> pd.DataFrame:
+                  departamentos: list[str], n_dias: int = 4, personas_dep: dict | None = None) -> pd.DataFrame:
     """Para cada departamento, la ventana de n días hábiles seguidos con más horas de trabajo.
     Solo se miran ventanas donde alguien cargó todos los días (si no, las horas libres saldrían infladas).
-    'Una persona alcanza' = lo que una sola persona puede hacer en esos días (n x horas por día).
-    'Libre del equipo' = capacidad de todos - trabajo de todos en esos días."""
+    'Alcanza con su equipo' = lo que pueden hacer las personas del departamento en esos días
+    (personas x n x horas por día; 1 persona si no se indica). 'Libre del equipo' = capacidad de todos -
+    trabajo de todos en esos días."""
     horas, cap = matriz_departamentos(reg, anio, mes, horas_personas, feriados, departamentos)
     con_datos = dias_con_datos(reg, anio, mes)
     habiles = [d for d in horas.columns if es_habil(d, feriados)]
     n = min(n_dias, len(habiles))
-    cols = ["Departamento", "Desde", "Hasta", "Horas", "Personas equivalentes", "Libre del equipo (hs)", "Lectura"]
+    cols = ["Departamento", "Personas del depto.", "Desde", "Hasta", "Horas", "Personas equivalentes",
+            "Libre del equipo (hs)", "Lectura"]
     if n <= 0:
         return pd.DataFrame(columns=cols)
     trabajo_total = horas.sum(axis=0)
-    una_persona = n * _hd_prom(horas_personas)
+    una_persona = n * _hd_prom(horas_personas)         # lo que hace UNA persona en la ventana
     filas = []
     for dep in horas.index:
         mejor = None
@@ -639,13 +647,16 @@ def ventanas_pico(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict, 
             continue
         h, v = mejor
         libre = max(0.0, float(cap[v].sum()) - float(trabajo_total[v].sum()))
-        if h <= una_persona + 0.05:
-            lectura = "✅ Una persona alcanza"
+        p_dep = float((personas_dep or {}).get(dep, 1.0))
+        capacidad_dep = una_persona * p_dep
+        if h <= capacidad_dep + 0.05:
+            lectura = "✅ Alcanza con su equipo"
         else:
-            exceso = h - una_persona
+            exceso = h - capacidad_dep
             lectura = (f"🤝 Necesita ayuda: el equipo tenía {_hs(libre)} hs libres" if libre >= exceso
                        else f"⚠️ No alcanza: faltan {_hs(exceso - libre)} hs")
-        filas.append({"Departamento": dep, "Desde": v[0], "Hasta": v[-1], "Horas": round(h, 1),
+        filas.append({"Departamento": dep, "Personas del depto.": round(p_dep, 1), "Desde": v[0], "Hasta": v[-1],
+                      "Horas": round(h, 1),
                       "Personas equivalentes": round(h / una_persona, 2),
                       "Libre del equipo (hs)": round(libre, 1), "Lectura": lectura})
     out = pd.DataFrame(filas, columns=cols)
@@ -754,17 +765,24 @@ def tiempo_libre_mes(reg: pd.DataFrame, anio: int, mes: int) -> dict:
 
 
 def informe_departamentos(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict, feriados: set,
-                          departamentos: list[str], hoy: date, n_dias: int = 4) -> dict:
+                          departamentos: list[str], hoy: date, n_dias: int = 4,
+                          personas_dep: dict | None = None, meses_tendencia: int = 6) -> dict:
     """Todo lo que lleva el informe para el contador, más 'hallazgos' ya redactados."""
+    personas_dep = personas_dep if personas_dep is not None else {d: 1.0 for d in departamentos}
     ini_m, fin_m = rango_mes(anio, mes)
     con_datos = dias_con_datos(reg, anio, mes)
     ultimo = max(con_datos) if con_datos else None          # los números llegan hasta el último día con datos
     parcial = ultimo is not None and ultimo < fin_m
     personas, tot = kpis_equipo(reg, anio, mes, horas_personas, feriados, ultimo)
-    res = resumen_departamentos_mes(reg, anio, mes, horas_personas, feriados, departamentos, ultimo)
+    res = resumen_departamentos_mes(reg, anio, mes, horas_personas, feriados, departamentos, ultimo, personas_dep)
     sem_h, sem_res = semanal_departamentos(reg, anio, mes, horas_personas, feriados, departamentos)
     dias = ocupacion_diaria_equipo(reg, anio, mes, horas_personas, feriados, departamentos)
-    ventanas = ventanas_pico(reg, anio, mes, horas_personas, feriados, departamentos, n_dias)
+    ventanas = ventanas_pico(reg, anio, mes, horas_personas, feriados, departamentos, n_dias, personas_dep)
+    senales = senal_departamentos(reg, anio, mes, horas_personas, feriados, departamentos, personas_dep, ultimo)
+    tendencia, meses_t = tendencia_departamentos_equipo(reg, anio, mes, horas_personas, feriados, departamentos,
+                                                        personas_dep, meses_tendencia)
+    extras = extras_por_departamento_persona(reg, anio, mes, horas_personas, feriados, ultimo)
+    cruce = matriz_persona_departamento(reg, anio, mes, horas_personas, ultimo)
     horas_d, cap_d = matriz_departamentos(reg, anio, mes, horas_personas, feriados, departamentos)
     picos = top_dias_pico(horas_d, cap_d, 3)
     libre = tiempo_libre_mes(reg, anio, mes)
@@ -805,17 +823,36 @@ def informe_departamentos(reg: pd.DataFrame, anio: int, mes: int, horas_personas
                  f"{'fue saturado' if n_sat == 1 else 'fueron saturados'} (desde {C.UMBRAL_SATURADO}% de la capacidad "
                  f"o con 1 hora extra o más), {n_alto} de carga alta (desde {C.UMBRAL_ALTO}%) y "
                  f"{len(dias) - n_sat - n_alto} con margen.")
+    if not senales.empty:
+        falta = senales[senales["Señal"].str.contains("Falta")]
+        cubre = senales[senales["Señal"].str.contains("Se cubre")]
+        def _lista(df):
+            return ", ".join(f"{r['Departamento']} (faltan {_hs(r['Faltan por semana (hs)'])} hs por semana, "
+                             f"equivale a {_hs(r['Equivalente en personas'])} personas)" for _, r in df.iterrows())
+        if not falta.empty:
+            h.append(f"Superaron la capacidad de su equipo y el resto no alcanzó a cubrirlo: {_lista(falta)}.")
+        if not cubre.empty:
+            h.append(f"Superaron la capacidad de su equipo pero el resto pudo ayudar: {_lista(cubre)}.")
+        if falta.empty and cubre.empty:
+            h.append("Ningún departamento superó la capacidad de su equipo.")
     if tot["extra"] > 0:
         h.append(f"Hubo {_hs(tot['extra'])} hs extra en el mes.")
+        if not extras.empty:
+            pd_ = extras.groupby("Departamento")["Extra (hs)"].sum().sort_values(ascending=False)
+            pp_ = extras.groupby("Persona")["Extra (hs)"].sum().sort_values(ascending=False)
+            h.append(f"Las horas extra se concentraron en {pd_.index[0]} ({_hs(pd_.iloc[0])} hs, "
+                     f"{pd_.iloc[0] / pd_.sum() * 100:.0f}%) y en {pp_.index[0]} ({_hs(pp_.iloc[0])} hs).")
     if not ventanas.empty:
         pasan = ventanas[ventanas["Lectura"].str.contains("Necesita ayuda|No alcanza")]
         h.append((f"En una ventana de {n_dias} días hábiles, {', '.join(pasan['Departamento'])} "
-                  f"{'superó' if len(pasan) == 1 else 'superaron'} lo que hace una persona (ver tabla de picos).")
+                  f"{'superó' if len(pasan) == 1 else 'superaron'} lo que puede hacer su equipo (ver tabla de picos).")
                  if not pasan.empty else
-                 f"Ningún departamento superó lo que hace una persona en una ventana de {n_dias} días hábiles.")
+                 f"Ningún departamento superó lo que puede hacer su equipo en una ventana de {n_dias} días hábiles.")
     return {"anio": anio, "mes": mes, "n_dias": n_dias, "ultimo_dia": ultimo, "parcial": parcial, "personas": personas, "totales": tot, "departamentos": res,
             "semanal_horas": sem_h, "semanal": sem_res, "dias": dias, "ventanas": ventanas, "picos": picos,
-            "tiempo_libre": libre, "cobertura": (completos, total_dp), "hallazgos": h}
+            "tiempo_libre": libre, "cobertura": (completos, total_dp), "hallazgos": h,
+            "personas_dep": personas_dep, "senales": senales, "tendencia": tendencia, "meses_tendencia": meses_t,
+            "extras": extras, "cruce": cruce}
 
 
 # ----------------------------------------------------------------------------
@@ -1028,3 +1065,143 @@ def grilla_persona(reg: pd.DataFrame, persona: str, horas_dia: float, feriados: 
         z.append(fz)
         texto.append(ft)
     return [x[0] for x in semanas], z, texto
+
+
+# ----------------------------------------------------------------------------
+# Señal de capacidad por departamento, tendencia y horas extra (para ir viendo cómo viene el equipo)
+# ----------------------------------------------------------------------------
+def personas_por_departamento(df_dep: pd.DataFrame, departamentos: list[str]) -> dict:
+    """Cuántas personas trabajan normalmente en cada departamento (hoja Departamentos). Por defecto 1."""
+    out = {d: 1.0 for d in departamentos}
+    if df_dep is not None and not df_dep.empty:
+        for r in df_dep.itertuples():
+            try:
+                v = float(str(r.Personas).replace(",", "."))
+            except ValueError:
+                continue
+            if v > 0:
+                out[str(r.Departamento).strip().upper()] = v
+    return out
+
+
+def senal_departamentos(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict, feriados: set,
+                        departamentos: list[str], personas_dep: dict, hasta: date | None = None) -> pd.DataFrame:
+    """¿Algún departamento supera su capacidad? Semana por semana se compara lo trabajado con lo que puede hacer el
+    equipo del departamento (personas x días con carga x horas por día). El exceso promedio por semana son las horas
+    por semana que 'faltarían'; dividido por una semana completa de una persona da el equivalente en personas.
+    Señal: 🟢 sin presión | 🟡 se cubre con las horas libres del resto del equipo | 🔴 falta capacidad."""
+    horas, cap = matriz_departamentos(reg, anio, mes, horas_personas, feriados, departamentos)
+    con_datos = dias_con_datos(reg, anio, mes)
+    ini, fin = rango_mes(anio, mes)
+    tope = min(fin, hasta) if hasta is not None else fin
+    hd = _hd_prom(horas_personas)
+    total_trabajo = horas.sum(axis=0)
+    filas = []
+    for dep in horas.index:
+        sem_datos = sobre = 0
+        horas_dep = cap_dep_tot = exceso_tot = cubrible = 0.0
+        for _, a, b in semanas_del_mes(anio, mes):
+            dias = [d for d in horas.columns if a <= d <= b and d <= tope and es_habil(d, feriados) and d in con_datos]
+            if not dias:
+                continue
+            sem_datos += 1
+            h = float(horas.loc[dep, dias].sum())
+            cap_dep = float(personas_dep.get(dep, 1.0)) * len(dias) * hd
+            libre_equipo = max(0.0, float(cap[dias].sum()) - float(total_trabajo[dias].sum()))
+            horas_dep += h
+            cap_dep_tot += cap_dep
+            if h > cap_dep + 0.05:
+                sobre += 1
+                exceso = h - cap_dep
+                exceso_tot += exceso
+                cubrible += min(exceso, libre_equipo)
+        if horas_dep <= 0:
+            continue
+        exceso_prom = exceso_tot / sem_datos if sem_datos else 0.0
+        if sobre == 0:
+            senal = "🟢 Sin presión"
+        elif cubrible >= exceso_tot - 0.05:
+            senal = "🟡 Se cubre con ayuda del equipo"
+        else:
+            senal = "🔴 Falta capacidad"
+        filas.append({
+            "Departamento": dep, "Personas": round(float(personas_dep.get(dep, 1.0)), 1), "Horas": round(horas_dep, 1),
+            "Capacidad del depto. (hs)": round(cap_dep_tot, 1),
+            "Ocupación %": round(horas_dep / cap_dep_tot * 100, 0) if cap_dep_tot > 0 else float("nan"),
+            "Semanas con datos": sem_datos, "Semanas sobre su capacidad": sobre,
+            "Faltan por semana (hs)": round(exceso_prom, 1),
+            "Equivalente en personas": round(exceso_prom / (5 * hd), 2) if hd > 0 else 0.0, "Señal": senal})
+    cols = ["Departamento", "Personas", "Horas", "Capacidad del depto. (hs)", "Ocupación %", "Semanas con datos",
+            "Semanas sobre su capacidad", "Faltan por semana (hs)", "Equivalente en personas", "Señal"]
+    out = pd.DataFrame(filas, columns=cols)
+    return out.sort_values(["Ocupación %", "Horas"], ascending=False, na_position="last", kind="stable").reset_index(drop=True)
+
+
+def tendencia_departamentos_equipo(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict, feriados: set,
+                                   departamentos: list[str], personas_dep: dict, n: int = 6):
+    """Horas y ocupación de cada departamento en los últimos n meses (solo meses con datos). El mes en curso se
+    mide hasta su último día con datos. Devuelve (DataFrame Mes/Departamento/Horas/Ocupación %, meses en orden)."""
+    hd = _hd_prom(horas_personas)
+    filas, etiquetas = [], []
+    for a, m in meses_atras(anio, mes, n):
+        con = dias_con_datos(reg, a, m)
+        if not con:
+            continue
+        ini, fin = rango_mes(a, m)
+        tope = min(fin, max(con)) if (a, m) == (anio, mes) else fin
+        etiqueta = f"{C.MESES_ES[m][:3]} {a}" + (" (en curso)" if tope < fin else "")
+        horas, _ = matriz_departamentos(reg, a, m, horas_personas, feriados, departamentos)
+        dias_hab = len(dias_habiles(ini, tope, feriados))
+        etiquetas.append(etiqueta)
+        for dep in horas.index:
+            h = float(horas.loc[dep, [d for d in horas.columns if d <= tope]].sum())
+            cap = float(personas_dep.get(dep, 1.0)) * dias_hab * hd
+            filas.append({"Mes": etiqueta, "Departamento": dep, "Horas": round(h, 1),
+                          "Ocupación %": round(h / cap * 100, 0) if cap > 0 else float("nan")})
+    return pd.DataFrame(filas, columns=["Mes", "Departamento", "Horas", "Ocupación %"]), etiquetas
+
+
+def extras_por_departamento_persona(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict, feriados: set,
+                                    hasta: date | None = None) -> pd.DataFrame:
+    """Horas extra del mes por persona y departamento. Las extra de cada día de una persona se reparten entre los
+    departamentos en proporción a lo que trabajó ese día. Devuelve Persona / Departamento / Extra (hs)."""
+    ini, fin = rango_mes(anio, mes)
+    tope = min(fin, hasta) if hasta is not None else fin
+    filas = []
+    for persona, hd in horas_personas.items():
+        rp = reg[(reg["Persona"] == persona) & (reg["Fecha"].dt.date >= ini) & (reg["Fecha"].dt.date <= tope)]
+        det = por_dia(rp, hd, feriados, ini, tope)
+        trabajo = rp[rp["Tipo"] == C.TIPO_TRABAJO]
+        for dia, r in det[det["Extra"] > 0.0001].iterrows():
+            del_dia = trabajo[trabajo["Fecha"].dt.date == dia.date()].groupby("Departamento")["Horas"].sum()
+            total = float(del_dia.sum())
+            if total <= 0:
+                continue
+            for dep, h in del_dia.items():
+                filas.append({"Persona": persona, "Departamento": dep,
+                              "Extra (hs)": float(r["Extra"]) * float(h) / total})
+    out = pd.DataFrame(filas, columns=["Persona", "Departamento", "Extra (hs)"])
+    if out.empty:
+        return out
+    out = out.groupby(["Persona", "Departamento"], as_index=False)["Extra (hs)"].sum()
+    out["Extra (hs)"] = out["Extra (hs)"].round(1)
+    return out.sort_values("Extra (hs)", ascending=False).reset_index(drop=True)
+
+
+def matriz_persona_departamento(reg: pd.DataFrame, anio: int, mes: int, horas_personas: dict,
+                                hasta: date | None = None) -> pd.DataFrame:
+    """Horas de trabajo del mes: una fila por persona, una columna por departamento (+ Total)."""
+    ini, fin = rango_mes(anio, mes)
+    tope = min(fin, hasta) if hasta is not None else fin
+    base = reg[(reg["Tipo"] == C.TIPO_TRABAJO) & (reg["Persona"].isin(list(horas_personas)))
+               & (reg["Fecha"].dt.date >= ini) & (reg["Fecha"].dt.date <= tope)]
+    if base.empty:
+        m = pd.DataFrame(index=list(horas_personas))
+    else:
+        m = base.pivot_table(index="Persona", columns="Departamento", values="Horas", aggfunc="sum", fill_value=0.0)
+    m = m.reindex(list(horas_personas)).fillna(0.0)
+    if len(m.columns):
+        m = m[sorted(m.columns, key=lambda c: -float(m[c].sum()))]
+    m["Total"] = m.sum(axis=1)
+    m.index.name = "Persona"
+    return m.round(1)
