@@ -20,21 +20,24 @@ HOJA_CATALOGO = "Catalogo"
 HOJA_PERSONAS = "Personas"
 HOJA_REGISTROS = "Registros"
 HOJA_FERIADOS = "Feriados"
+HOJA_DEPARTAMENTOS = "Departamentos"
 
 COLS_CATALOGO = ["Departamento", "Tarea", "Subtarea", "Tipo", "Orden", "Activo"]
 COLS_PERSONAS = ["Nombre", "Rol", "Activo", "HorasDia"]
 COLS_REGISTROS = ["ID", "Fecha", "Persona", "Departamento", "Tarea", "Subtarea",
                   "Minutos", "Nota", "Registrado"]
 COLS_FERIADOS = ["Fecha", "Motivo"]
+COLS_DEPARTAMENTOS = ["Departamento", "Personas"]
 
 ESQUEMA = {
     HOJA_CATALOGO: COLS_CATALOGO,
     HOJA_PERSONAS: COLS_PERSONAS,
     HOJA_REGISTROS: COLS_REGISTROS,
     HOJA_FERIADOS: COLS_FERIADOS,
+    HOJA_DEPARTAMENTOS: COLS_DEPARTAMENTOS,
 }
 # Hojas que se completan con datos iniciales si están vacías
-SEMBRAR_SI_VACIA = (HOJA_CATALOGO, HOJA_PERSONAS, HOJA_FERIADOS)
+SEMBRAR_SI_VACIA = (HOJA_CATALOGO, HOJA_PERSONAS, HOJA_FERIADOS, HOJA_DEPARTAMENTOS)
 
 # --- Cuándo un día del equipo se considera cargado (trabajo / capacidad del equipo) ---
 UMBRAL_ALTO = 60        # desde este % la carga se considera alta
@@ -63,6 +66,9 @@ PERSONAS_SEED = [
     ("Johana", ROL_OPERARIO, "SI", 6),
     (NOMBRE_ADMIN, ROL_ADMIN, "SI", 0),
 ]
+
+# --- Cuántas personas trabajan normalmente en cada departamento (se edita en la hoja Departamentos) ---
+PERSONAS_POR_DEPARTAMENTO_SEED = {"IMPUESTOS": 2}   # el resto arranca en 1
 
 # --- Colores por departamento (los mismos del organigrama) ---
 COLORES_DEPTO = {
