@@ -7,7 +7,7 @@ from xml.sax.saxutils import escape
 
 import pandas as pd
 from reportlab.graphics.charts.barcharts import HorizontalBarChart, VerticalBarChart
-from reportlab.graphics.shapes import Drawing, Line, String
+from reportlab.graphics.shapes import Drawing, Line, Rect, String
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
@@ -34,7 +34,8 @@ _EST = {
 
 def _limpiar(texto) -> str:
     """Saca emojis y símbolos que la tipografía del PDF no puede dibujar."""
-    t = "".join(ch for ch in str(texto) if ord(ch) < 256 or ch in "–—•")
+    t = str(texto).replace("−", "-").replace("≈", "aprox.").replace("→", "->")
+    t = "".join(ch for ch in t if ord(ch) < 256 or ch in "–—•")
     return re.sub(r"\s+", " ", t).strip()
 
 
@@ -56,11 +57,11 @@ ROJO_SUAVE, AMARILLO_SUAVE, VERDE_SUAVE = (colors.HexColor("#FDE2E2"), colors.He
 
 def _color_estado(texto: str):
     t = _limpiar(texto)
-    if "No alcanza" in t or "Saturado" in t:
+    if "No alcanza" in t or "Saturado" in t or "Falta capacidad" in t:
         return ROJO_SUAVE
-    if "Necesita ayuda" in t or t == "Alto":
+    if "Necesita ayuda" in t or t == "Alto" or "Se cubre con ayuda" in t:
         return AMARILLO_SUAVE
-    if "Una persona alcanza" in t or "Con margen" in t:
+    if "Alcanza con su equipo" in t or "Una persona alcanza" in t or "Con margen" in t or "Sin presión" in t:
         return VERDE_SUAVE
     return None
 
@@ -220,6 +221,36 @@ def _grafico_ocupacion(dias: pd.DataFrame):
     return dib
 
 
+def _grafico_tendencia(tend: pd.DataFrame, meses: list[str]):
+    """Barras apiladas: horas de cada departamento mes a mes (colores de cada departamento)."""
+    tot = tend.groupby("Departamento")["Horas"].sum().sort_values(ascending=False)
+    deps = [d for d in tot.index if tot[d] > 0]
+    dib = Drawing(500, 200)
+    bc = VerticalBarChart()
+    bc.x, bc.y, bc.width, bc.height = 40, 62, 440, 125
+    bc.data = [[float(tend[(tend["Departamento"] == dep) & (tend["Mes"] == m)]["Horas"].sum()) for m in meses]
+               for dep in deps]
+    bc.categoryAxis.categoryNames = meses
+    bc.categoryAxis.labels.fontSize = 7
+    bc.valueAxis.valueMin = 0
+    bc.valueAxis.labels.fontSize = 7
+    bc.categoryAxis.style = "stacked"
+    for i, dep in enumerate(deps):
+        bc.bars[i].fillColor = colors.HexColor(C.COLORES_DEPTO.get(dep, "#888888"))
+        bc.bars[i].strokeColor = None
+    dib.add(bc)
+    for i, dep in enumerate(deps):
+        x, y = 40 + (i % 3) * 150, 40 - (i // 3) * 11
+        dib.add(Rect(x, y, 7, 7, fillColor=colors.HexColor(C.COLORES_DEPTO.get(dep, "#888888")), strokeColor=None))
+        dib.add(String(x + 10, y, _limpiar(dep), fontSize=6.5))
+    return dib
+
+
+CORTO = {"ATENCIÓN AL CLIENTE": "Atenc. cliente", "DOCUMENTACIÓN": "Document.", "CONTABILIDAD": "Contab.",
+         "RECURSOS HUMANOS": "RR.HH.", "IMPUESTOS": "Impuestos", "GERENCIAL": "Gerencial", "COOPERATIVA": "Coop.",
+         "TRÁMITES": "Trámites", "SUELDOS": "Sueldos"}
+
+
 def _dia(d) -> str:
     return f"{['lun', 'mar', 'mié', 'jue', 'vie', 'sáb', 'dom'][d.weekday()]} {d:%d/%m}"
 
@@ -241,20 +272,63 @@ def pdf_departamentos(d: dict) -> bytes:
     story += [tk, _p("Lo más importante", "h")]
     story += [_p("• " + x) for x in d["hallazgos"]]
 
+    # --- horas por departamento ---
     res = d["departamentos"]
     act = res[(res["Horas"] > 0) | (res["Mes anterior (hs)"] > 0)]
     story += [_p("Horas de trabajo por departamento", "h")]
     if not act[act["Horas"] > 0].empty:
         story.append(_grafico_departamentos(act[act["Horas"] > 0][["Departamento", "Horas"]]))
-    filas = [[r["Departamento"], _num(r["Horas"]), _num(r["% del trabajo"]), _num(r["% de la capacidad del equipo"]),
-              _num(r["Personas equivalentes"], 2), _num(r["Mes anterior (hs)"]),
+    filas = [[r["Departamento"], _num(r["Personas del depto."]), _num(r["Horas"]), _num(r["Ocupación del depto. %"], 0) + "%",
+              _num(r["% del trabajo"], 0) + "%", _num(r["Mes anterior (hs)"]),
               "—" if pd.isna(r["Variación %"]) else f"{r['Variación %']:+.0f}%"] for _, r in act.iterrows()]
-    story.append(_tabla(["Departamento", "Horas", "% del trabajo", "% de la capacidad", "Personas equiv.",
+    story.append(_tabla(["Departamento", "Personas", "Horas", "Ocupación del depto.", "% del trabajo",
                          "Mes anterior (hs)", "Variación"], filas,
-                        [4.6 * cm, 1.8 * cm, 2.2 * cm, 2.6 * cm, 2.3 * cm, 2.4 * cm, 1.9 * cm]))
-    story.append(_p("Personas equivalentes = horas del mes ÷ (días hábiles × horas por día): cuántas personas a tiempo "
-                    "completo hicieron falta para ese departamento.", "sub"))
+                        [4.6 * cm, 1.8 * cm, 1.7 * cm, 2.6 * cm, 2.2 * cm, 2.5 * cm, 2.0 * cm]))
+    story.append(_p("Personas = cuántas trabajan normalmente en el departamento (hoja Departamentos). Ocupación del "
+                    "departamento = horas ÷ (personas × días hábiles × horas por día). Si el mes está en curso, el mes "
+                    "anterior se compara en el mismo tramo.", "sub"))
 
+    # --- señal de capacidad ---
+    sen = d["senales"]
+    story += [_p("¿Hace falta capacidad? Señal por departamento", "h")]
+    if sen.empty:
+        story.append(_p("Todavía no hay horas de trabajo para evaluar."))
+    else:
+        filas = [[r["Departamento"], _num(r["Personas"]), _num(r["Horas"]), _num(r["Capacidad del depto. (hs)"]),
+                  _num(r["Ocupación %"], 0) + "%", f"{r['Semanas sobre su capacidad']} de {r['Semanas con datos']}",
+                  _num(r["Faltan por semana (hs)"]), _num(r["Equivalente en personas"], 2), r["Señal"]]
+                 for _, r in sen.iterrows()]
+        story.append(_tabla(["Departamento", "Pers.", "Horas", "Capac. (hs)", "Ocup.", "Semanas sobre su capac.",
+                             "Faltan por semana", "Pers. equiv.", "Señal"], filas,
+                            [3.3 * cm, 1.2 * cm, 1.4 * cm, 1.7 * cm, 1.4 * cm, 2.2 * cm, 1.7 * cm, 1.7 * cm, 3.2 * cm],
+                            colorear=8))
+        story.append(_p("Cada semana se compara lo trabajado con lo que puede hacer el equipo del departamento. «Faltan por "
+                        "semana» son las horas, en promedio, por encima de esa capacidad; «Pers. equiv.» las expresa en semanas "
+                        "completas de una persona. Sin presión = no superó su capacidad. Se cubre con ayuda = la superó pero "
+                        "al resto del equipo le sobraban horas. Falta capacidad = la superó y al resto no le alcanzaban las "
+                        "horas libres: es la señal a mirar mes a mes antes de pensar en sumar a alguien.", "sub"))
+
+    # --- tendencia ---
+    story += [_p("Tendencia de los últimos meses", "h")]
+    tend, meses = d["tendencia"], d["meses_tendencia"]
+    if len(meses) < 2:
+        story.append(_p("Todavía hay un solo mes con datos: la tendencia aparece a partir del segundo mes."))
+    else:
+        story.append(_grafico_tendencia(tend, meses))
+        orden = tend.groupby("Departamento")["Horas"].sum().sort_values(ascending=False)
+        filas = []
+        for dep in [x for x in orden.index if orden[x] > 0]:
+            fila = [dep]
+            for m in meses:
+                r = tend[(tend["Departamento"] == dep) & (tend["Mes"] == m)].iloc[0]
+                fila.append(f"{_num(r['Horas'])} ({_num(r['Ocupación %'], 0)}%)")
+            filas.append(fila)
+        ancho = (17.6 - 4.4) / len(meses)
+        story.append(_tabla(["Departamento"] + meses, filas, [4.4 * cm] + [ancho * cm] * len(meses)))
+        story.append(_p("Horas de trabajo de cada departamento y, entre paréntesis, su ocupación (horas ÷ capacidad de su "
+                        "equipo). El mes en curso se mide hasta el último día cargado.", "sub"))
+
+    # --- días de mayor carga del equipo ---
     dias = d["dias"]
     story += [_p("Días de mayor carga del equipo", "h")]
     if dias.empty:
@@ -271,6 +345,7 @@ def pdf_departamentos(d: dict) -> bytes:
                             filas, [2.2 * cm, 1.6 * cm, 1.9 * cm, 1.5 * cm, 2.0 * cm, 1.4 * cm, 4.2 * cm, 2.4 * cm],
                             colorear=7))
 
+    # --- semana por semana ---
     sem, semh = d["semanal"], d["semanal_horas"]
     sem = sem[sem["Capacidad del equipo (hs)"] > 0]          # solo semanas con carga
     semh = semh[list(sem.index)] if not sem.empty else semh.iloc[:, :0]
@@ -288,20 +363,51 @@ def pdf_departamentos(d: dict) -> bytes:
                                                                                 con_horas.itertuples(index=False))],
                             [4.6 * cm] + [ancho_sem * cm] * len(semh.columns)))
 
+    # --- picos ---
     v = d["ventanas"]
     story += [_p(f"Picos: la ventana de {d['n_dias']} días hábiles más cargada de cada departamento", "h")]
     if v.empty:
         story.append(_p(f"Todavía no hay {d['n_dias']} días hábiles seguidos con horas cargadas."))
     else:
-        filas = [[r["Departamento"], _dia(r["Desde"]), _dia(r["Hasta"]), _num(r["Horas"]),
-                  _num(r["Personas equivalentes"], 2), _num(r["Libre del equipo (hs)"]), r["Lectura"]]
-                 for _, r in v.iterrows()]
-        story.append(_tabla(["Departamento", "Desde", "Hasta", "Horas", "Pers. equiv.", "Libre equipo", "Lectura"],
-                            filas, [3.6 * cm, 2.0 * cm, 2.0 * cm, 1.4 * cm, 1.8 * cm, 2.0 * cm, 5.0 * cm], colorear=6))
-        story.append(_p("«Una persona alcanza» compara con lo que hace una sola persona en esos días. Los departamentos con "
-                        "más de una persona fija pueden figurar con «necesita ayuda» sin que sea un problema. "
-                        "«Libre equipo» = capacidad de todos − trabajo de todos en esos días.", "sub"))
+        filas = [[r["Departamento"], _num(r["Personas del depto."]), _dia(r["Desde"]), _dia(r["Hasta"]), _num(r["Horas"]),
+                  _num(r["Libre del equipo (hs)"]), r["Lectura"]] for _, r in v.iterrows()]
+        story.append(_tabla(["Departamento", "Pers.", "Desde", "Hasta", "Horas", "Libre equipo", "Lectura"],
+                            filas, [3.8 * cm, 1.2 * cm, 2.0 * cm, 2.0 * cm, 1.4 * cm, 2.0 * cm, 5.2 * cm], colorear=6))
+        story.append(_p("«Alcanza con su equipo» compara con lo que pueden hacer las personas del departamento en esos "
+                        "días. «Libre equipo» = capacidad de todos − trabajo de todos en esos días.", "sub"))
 
+    # --- horas extra ---
+    ex = d["extras"]
+    story += [_p("Horas extra por departamento y por persona", "h")]
+    if ex.empty:
+        story.append(_p("No hubo horas extra en el período."))
+    else:
+        por_dep = ex.groupby("Departamento")["Extra (hs)"].sum().sort_values(ascending=False)
+        por_per = ex.groupby("Persona")["Extra (hs)"].sum().sort_values(ascending=False)
+        total_ex = float(por_dep.sum())
+        story.append(_tabla(["Departamento", "Extra (hs)", "% del total"],
+                            [[k, _num(v), _num(v / total_ex * 100, 0) + "%"] for k, v in por_dep.items()],
+                            [7 * cm, 3 * cm, 3 * cm]))
+        story.append(Spacer(1, 4))
+        story.append(_tabla(["Persona", "Extra (hs)", "% del total"],
+                            [[k, _num(v), _num(v / total_ex * 100, 0) + "%"] for k, v in por_per.items()],
+                            [7 * cm, 3 * cm, 3 * cm]))
+        story.append(_p("Las horas extra de cada día se reparten entre los departamentos en proporción a lo que la persona "
+                        "trabajó ese día.", "sub"))
+
+    # --- quién trabaja en qué ---
+    cr = d["cruce"]
+    deps_cr = [c for c in cr.columns if c != "Total" and float(cr[c].sum()) > 0]
+    story += [_p("Quién trabaja en qué (horas del período)", "h")]
+    if not deps_cr:
+        story.append(_p("Todavía no hay horas de trabajo cargadas."))
+    else:
+        ancho = (17.6 - 2.6 - 1.4) / len(deps_cr)
+        story.append(_tabla(["Persona"] + [CORTO.get(x, x) for x in deps_cr] + ["Total"],
+                            [[idx] + [_num(r[c]) for c in deps_cr] + [_num(r["Total"])] for idx, r in cr.iterrows()],
+                            [2.6 * cm] + [ancho * cm] * len(deps_cr) + [1.4 * cm]))
+
+    # --- tiempo disponible y por persona ---
     libre = d["tiempo_libre"]
     story += [_p("Tiempo disponible y de mejora", "h")]
     filas = [["Disponible (sin tarea)", _num(libre["disponible"])],
@@ -320,6 +426,7 @@ def pdf_departamentos(d: dict) -> bytes:
               _p(f"• Cobertura de carga del mes: {cub} de {tot_dp} días-persona hábiles quedaron completos."
                  if tot_dp else "• Todavía no hay días hábiles transcurridos para medir la cobertura."),
               _p("• Capacidad = días hábiles × horas por día, menos las ausencias. Disponible = horas libres y de mejora."),
-              _p("• Horas extra = trabajo por encima de la capacidad del día, o trabajo en fin de semana o feriado.")]
+              _p("• Horas extra = trabajo por encima de la capacidad del día, o trabajo en fin de semana o feriado."),
+              _p("• Las decisiones conviene tomarlas mirando varios meses seguidos, no uno solo.")]
     doc.build(story)
     return buf.getvalue()
