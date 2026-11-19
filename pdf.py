@@ -12,8 +12,9 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import cm
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+import calc
 import config as C
 
 AZUL = colors.HexColor("#1F4E78")
@@ -57,9 +58,9 @@ ROJO_SUAVE, AMARILLO_SUAVE, VERDE_SUAVE = (colors.HexColor("#FDE2E2"), colors.He
 
 def _color_estado(texto: str):
     t = _limpiar(texto)
-    if "No alcanza" in t or "Saturado" in t or "Falta capacidad" in t:
+    if "No alcanza" in t or "Saturado" in t or "Falta capacidad" in t or t == "Ocupada":
         return ROJO_SUAVE
-    if "Necesita ayuda" in t or t == "Alto" or "Se cubre con ayuda" in t:
+    if "Necesita ayuda" in t or t in ("Alto", "Carga alta") or "Se cubre con ayuda" in t:
         return AMARILLO_SUAVE
     if "Alcanza con su equipo" in t or "Una persona alcanza" in t or "Con margen" in t or "Sin presión" in t:
         return VERDE_SUAVE
@@ -118,29 +119,138 @@ def _grafico_departamentos(por_depto: pd.DataFrame):
     return dib
 
 
-def pdf_individual(persona: str, periodo: str, resumen: dict, por_depto: pd.DataFrame,
-                   detalle: pd.DataFrame, extras: pd.DataFrame | None = None) -> bytes:
-    buf, doc, story = _documento(f"Informe mensual — {persona}", periodo)
-    kp = [["Capacidad", "Trabajo", "Utilización", "Disponible", "Ausencias", "Horas extra"],
-          [f"{_num(resumen['capacidad'])} hs", f"{_num(resumen['trabajo'])} hs", f"{_num(resumen['utilizacion'], 0)} %",
-           f"{_num(resumen['disponible'])} hs", f"{_num(resumen['ausencia'])} hs", f"{_num(resumen['extra'])} hs"]]
-    t = Table([[ _p(c, "celda_b") for c in kp[0]], [_p(c, "n") for c in kp[1]]], colWidths=[2.9 * cm] * 6)
-    t.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), CELESTE), ("BOX", (0, 0), (-1, -1), 0.5, CELESTE),
-                           ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("BACKGROUND", (0, 1), (-1, 1), GRIS)]))
-    story += [t, Spacer(1, 6)]
+COLOR_TRABAJO, COLOR_DISPONIBLE, COLOR_AUSENCIA = "#2D9C6B", "#9BD4F0", "#B8C0C8"
 
-    if por_depto is not None and not por_depto.empty:
-        story += [_p("Horas de trabajo por departamento", "h"), _grafico_departamentos(por_depto)]
-    if detalle is not None and not detalle.empty:
-        story += [_p("Detalle por tarea y subtarea", "h")]
-        filas = [[r.Departamento, r.Tarea, r.Subtarea or "—", _num(r.Horas)] for r in detalle.itertuples()]
-        filas.append(["TOTAL", "", "", _num(detalle["Horas"].sum())])
-        story.append(_tabla(["Departamento", "Tarea", "Subtarea", "Horas"], filas,
-                            [4.2 * cm, 6 * cm, 5.2 * cm, 2 * cm]))
-    if extras is not None and not extras.empty:
-        story += [_p("Días con horas extra", "h")]
-        story.append(_tabla(list(extras.columns), [[_num(v, 1) if isinstance(v, float) else v for v in f]
-                                                   for f in extras.itertuples(index=False)]))
+
+def _leyenda(dib, items, x0=40, y0=40, por_fila=3, ancho=150):
+    for i, (nombre, color) in enumerate(items):
+        x, y = x0 + (i % por_fila) * ancho, y0 - (i // por_fila) * 11
+        dib.add(Rect(x, y, 7, 7, fillColor=colors.HexColor(color), strokeColor=None))
+        dib.add(String(x + 10, y, _limpiar(nombre), fontSize=6.5))
+
+
+def _grafico_apilado(categorias: list[str], series: list[tuple], capacidad: list[float] | None = None):
+    """Barras apiladas por semana. series = [(nombre, color, valores)]. Con 'capacidad' dibuja la línea punteada."""
+    alto_leyenda = 11 * ((len(series) + 2) // 3) + 8
+    dib = Drawing(500, 142 + alto_leyenda)
+    bc = VerticalBarChart()
+    bc.x, bc.y, bc.width, bc.height = 40, 30 + alto_leyenda, 440, 100
+    bc.data = [list(v) for _, _, v in series]
+    bc.categoryAxis.categoryNames = categorias
+    bc.categoryAxis.labels.fontSize = 6.5
+    bc.categoryAxis.style = "stacked"
+    totales = [sum(v[i] for _, _, v in series) for i in range(len(categorias))]
+    vmax = max(totales + (capacidad or [0])) * 1.12 or 1
+    bc.valueAxis.valueMin, bc.valueAxis.valueMax = 0, vmax
+    bc.valueAxis.labels.fontSize = 7
+    for i, (_, color, _) in enumerate(series):
+        bc.bars[i].fillColor = colors.HexColor(color)
+        bc.bars[i].strokeColor = None
+    dib.add(bc)
+    items = [(n, c) for n, c, _ in series]
+    if capacidad:
+        puntos = [(bc.x + (i + 0.5) * bc.width / len(categorias), bc.y + v / vmax * bc.height)
+                  for i, v in enumerate(capacidad)]
+        for (x1, y1), (x2, y2) in zip(puntos, puntos[1:]):
+            linea = Line(x1, y1, x2, y2, strokeColor=colors.HexColor("#1B2A38"), strokeWidth=1)
+            linea.strokeDashArray = [3, 2]
+            dib.add(linea)
+        for x, y in puntos:
+            dib.add(Rect(x - 2, y - 2, 4, 4, fillColor=colors.HexColor("#1B2A38"), strokeColor=None))
+        items.append(("Capacidad (línea punteada)", "#1B2A38"))
+    _leyenda(dib, items, y0=alto_leyenda - 6 + 4)
+    return dib
+
+
+def pdf_individual(d: dict) -> bytes:
+    """Informe mensual de una persona. 'd' es lo que devuelve calc.informe_persona.
+    Orden pensado para decidir a simple vista: cuadro de números, conclusiones, horas por departamento,
+    semana por semana y, al final, los días con horas extra. Cada bloque se mantiene entero en una página."""
+    periodo = f"{C.MESES_ES[d['mes']]} {d['anio']}"
+    corte = f" · datos hasta el {d['ultimo_dia']:%d/%m}" if d.get("parcial") else ""
+    buf, doc, story = _documento(f"Informe mensual — {d['persona']}", f"{periodo}{corte}")
+    r = d["resumen"]
+
+    kp = [["Capacidad", "Trabajo", "Utilización", "Disponible (hs)", "Disponible (%)", "Horas extra"],
+          [f"{_num(r['capacidad'])} hs", f"{_num(r['trabajo'])} hs", f"{_num(r['utilizacion'], 0)} %",
+           f"{_num(r['disponible'])} hs", f"{_num(r['disponibilidad'], 0)} %", f"{_num(r['extra'])} hs"]]
+    tk = Table([[_p(c, "celda_b") for c in kp[0]], [_p(c, "n") for c in kp[1]]], colWidths=[2.95 * cm] * 6)
+    tk.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), CELESTE), ("BOX", (0, 0), (-1, -1), 0.5, CELESTE),
+                            ("ALIGN", (0, 0), (-1, -1), "CENTER"), ("BACKGROUND", (0, 1), (-1, 1), GRIS)]))
+    story += [tk, _p("Lo más importante", "h")]
+    story += [_p("• " + x) for x in d["hallazgos"]] or [_p("Todavía no hay horas cargadas en este mes.")]
+
+    # --- horas de trabajo por departamento (mes) ---
+    pd_ = d["por_depto"]
+    bloque = [_p("Horas de trabajo por departamento", "h")]
+    if pd_.empty:
+        bloque.append(_p("Sin horas de trabajo cargadas en este mes."))
+    else:
+        bloque.append(_grafico_departamentos(pd_[["Departamento", "Horas"]]))
+        bloque.append(_tabla(["Departamento", "Horas", "% del trabajo", "Mes anterior (hs)", "Variación"],
+                             [[x["Departamento"], _num(x["Horas"]), _num(x["% del trabajo"], 0) + "%",
+                               _num(x["Mes anterior (hs)"]),
+                               "—" if pd.isna(x["Variación %"]) else f"{x['Variación %']:+.0f}%"] for _, x in pd_.iterrows()],
+                             [5.4 * cm, 2.4 * cm, 3 * cm, 3.4 * cm, 2.6 * cm]))
+        if d.get("parcial"):
+            bloque.append(_p("El mes está en curso: se compara con el mismo tramo del mes anterior.", "sub"))
+    story.append(KeepTogether(bloque))
+
+    # --- horas por departamento en cada semana ---
+    tabla, sems = d["tabla"], d["semanas_con"]
+    deps = [i for i in tabla.index if i not in calc.FILAS_ESPECIALES]
+    bloque = [_p("Horas por departamento en cada semana", "h")]
+    if not sems:
+        bloque.append(_p("Todavía no hay semanas con horas cargadas."))
+    else:
+        series = [(dep, C.COLORES_DEPTO.get(dep, "#888888"), [float(tabla.loc[dep, x]) for x in sems]) for dep in deps]
+        for nombre, color in (("Disponible y mejoras", COLOR_DISPONIBLE), ("Ausencias", COLOR_AUSENCIA)):
+            vals = [float(tabla.loc[nombre, x]) for x in sems]
+            if sum(vals) > 0:
+                series.append((nombre, color, vals))
+        bloque.append(_grafico_apilado(sems, series))
+        ancho = (17.6 - 4.4 - 1.5 - 1.7) / len(sems)
+        filas = []
+        for idx, f in tabla[sems + ["Mes", "% del trabajo"]].iterrows():
+            filas.append([CORTO.get(idx, idx)] + [_num(f[x]) for x in sems] +
+                         [_num(f["Mes"]), "" if pd.isna(f["% del trabajo"]) else _num(f["% del trabajo"], 0) + "%"])
+        bloque.append(_tabla(["Departamento"] + sems + ["Mes", "% trabajo"], filas,
+                             [4.4 * cm] + [ancho * cm] * len(sems) + [1.5 * cm, 1.7 * cm]))
+    story.append(KeepTogether(bloque))
+
+    # --- tus horas por semana ---
+    sp = d["semanal"]
+    bloque = [_p("Tus horas por semana", "h")]
+    if sp.empty:
+        bloque.append(_p("Todavía no hay horas cargadas en este mes."))
+    else:
+        bloque.append(_grafico_apilado(list(sp["Semana"]),
+                                       [("Trabajo", COLOR_TRABAJO, list(sp["Trabajo (hs)"])),
+                                        ("Disponible", COLOR_DISPONIBLE, list(sp["Disponible (hs)"])),
+                                        ("Ausencia", COLOR_AUSENCIA, list(sp["Ausencia (hs)"]))],
+                                       capacidad=list(sp["Capacidad (hs)"])))
+        filas = [[x["Semana"], _num(x["Capacidad (hs)"]), _num(x["Trabajo (hs)"]), _num(x["Disponible (hs)"]),
+                  _num(x["Ausencia (hs)"]), _num(x["Extra (hs)"]), _num(x["Libre (hs)"]), _num(x["Ocupación %"], 0) + "%",
+                  x["Estado"], str(int(x["Días sin carga"])), CORTO.get(x["Departamento principal"], x["Departamento principal"])]
+                 for _, x in sp.iterrows()]
+        bloque.append(_tabla(["Semana", "Cap.", "Trab.", "Disp.", "Aus.", "Extra", "Libre", "Ocup.", "Estado",
+                              "Sin cargar", "Depto."], filas,
+                             [3.4 * cm, 1.3 * cm, 1.3 * cm, 1.4 * cm, 1.4 * cm, 1.2 * cm, 1.2 * cm, 1.3 * cm, 1.7 * cm,
+                              1.4 * cm, 2.2 * cm], colorear=8))
+        bloque.append(_p(f"Cap. = capacidad · Trab. = trabajo · Disp. = disponible · Aus. = ausencia. Solo cuentan los días en "
+                         f"que cargaste horas. Libre = capacidad − trabajo. Estado: Ocupada desde {C.UMBRAL_SATURADO}% de la "
+                         f"capacidad, Carga alta desde {C.UMBRAL_ALTO}%, Con margen por debajo. «Sin cargar» = días hábiles "
+                         "pasados sin ninguna carga.", "sub"))
+    story.append(KeepTogether(bloque))
+
+    # --- horas extra ---
+    ex = d["extras"]
+    if not ex.empty:
+        story.append(KeepTogether([
+            _p("Días con horas extra", "h"),
+            _tabla(["Fecha", "Trabajo (hs)", "Capacidad del día (hs)", "Extra (hs)"],
+                   [[_dia(x["Fecha"]), _num(x["Trabajo (hs)"]), _num(x["Capacidad del día (hs)"]), _num(x["Extra (hs)"])]
+                    for _, x in ex.iterrows()], [4 * cm, 3.5 * cm, 4.5 * cm, 3 * cm])]))
     doc.build(story)
     return buf.getvalue()
 
