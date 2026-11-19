@@ -944,6 +944,45 @@ class TestHojaDepartamentos(unittest.TestCase):
         self.assertEqual(len(st_.leer(C.HOJA_DEPARTAMENTOS)), 9)                 # no duplica
 
 
+class TestInformePersona(unittest.TestCase):
+    def datos(self):
+        filas = [("2026-09-03", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 600)]            # mes anterior: 10 hs
+        for dia in ("05", "06", "07"):                                                             # semana 2: 3 días
+            filas += [(f"2026-10-{dia}", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 240),    # 4 hs
+                      (f"2026-10-{dia}", "Natalia", "DOCUMENTACIÓN", "Carga de documentación", "Sociedades", 60),   # 1 h
+                      (f"2026-10-{dia}", "Natalia", "GENERAL", "Disponible", "", 60)]               # 1 h
+        filas += [("2026-10-08", "Natalia", "IMPUESTOS", "IVA mensual", "Control", 480),            # 8 hs: 2 de extra
+                  ("2026-10-01", "Natalia", "GENERAL", "Disponible", "", 360),
+                  ("2026-10-02", "Natalia", "GENERAL", "Ausencias", "Inasistencia (día personal)", 360),
+                  ("2026-10-05", "Athina", "SUELDOS", "Cargas sociales", "Control", 600)]            # otra persona
+        return registros(filas)
+
+    def test_contenido_y_conclusiones(self):
+        d = calc.informe_persona(self.datos(), "Natalia", 2026, 10, HD, FER, date(2026, 10, 12))
+        r = d["resumen"]
+        self.assertTrue(d["parcial"])
+        self.assertEqual(d["ultimo_dia"], date(2026, 10, 8))
+        self.assertEqual(r["capacidad"], 6 * 5)                                  # 1/10 (6), 2/10 ausente (0), 5, 6, 7 y 8
+        self.assertEqual(r["trabajo"], 3 * 5 + 8)
+        self.assertEqual(r["extra"], 2.0)
+        self.assertEqual(list(d["por_depto"]["Departamento"]), ["IMPUESTOS", "DOCUMENTACIÓN"])     # sin SUELDOS (es de Athina)
+        self.assertEqual(d["por_depto"].iloc[0]["Mes anterior (hs)"], 10.0)
+        txt = " ".join(d["hallazgos"])
+        for frase in ("El mes está en curso", "Trabajó", "El departamento con más horas fue IMPUESTOS", "Contra el mismo tramo",
+                      "Semana más cargada", "hs extra", "Ausencias"):
+            self.assertIn(frase, txt)
+        self.assertEqual(list(d["extras"]["Fecha"]), [date(2026, 10, 8)])
+        self.assertEqual(d["semanal"]["Estado"].iloc[-1] in ("Ocupada", "Carga alta", "Con margen"), True)
+        self.assertEqual(d["tabla"].loc["TOTAL TRABAJO", "Mes"], 23.0)
+
+    def test_persona_sin_datos(self):
+        d = calc.informe_persona(self.datos(), "Johana", 2026, 10, HD, FER, date(2026, 10, 12))
+        self.assertTrue(d["por_depto"].empty)
+        self.assertTrue(d["semanal"].empty)
+        self.assertFalse(d["parcial"])
+        self.assertIsNone(d["ultimo_dia"])
+
+
 class FakeWS:
     def __init__(self, title, ids):
         self.title, self.rows, self.col_count, self.id = title, [], 6, next(ids)
