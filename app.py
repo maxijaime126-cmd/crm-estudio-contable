@@ -755,7 +755,7 @@ def tab_individual(ctx, persona, anio, mes, hoy, es_admin):
 
     seccion("Informe")
     boton_pdf(f"ind_{persona}_{anio}_{mes}", "📄 Preparar PDF mensual",
-              lambda: pdf.pdf_individual(persona, periodo, r, por_dep, detalle_pdf, extras_pdf),
+              lambda: pdf.pdf_individual(calc.informe_persona(reg, persona, anio, mes, hd, feriados, hoy)),
               f"Informe_{persona}_{anio}-{mes:02d}.pdf")
 
 
