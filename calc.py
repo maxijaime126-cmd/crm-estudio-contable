@@ -1205,3 +1205,65 @@ def matriz_persona_departamento(reg: pd.DataFrame, anio: int, mes: int, horas_pe
     m["Total"] = m.sum(axis=1)
     m.index.name = "Persona"
     return m.round(1)
+
+
+# ----------------------------------------------------------------------------
+# Informe mensual individual (el que se imprime por persona)
+# ----------------------------------------------------------------------------
+def informe_persona(reg: pd.DataFrame, persona: str, anio: int, mes: int, horas_dia: float, feriados: set,
+                    hoy: date) -> dict:
+    """Todo lo que lleva el informe mensual de UNA persona, con las conclusiones ya redactadas.
+    Si el mes está en curso, los números llegan hasta el último día que esa persona cargó."""
+    ini, fin = rango_mes(anio, mes)
+    rp = reg[(reg["Persona"] == persona) & (reg["Fecha"].dt.date >= ini) & (reg["Fecha"].dt.date <= fin)]
+    ultimo = rp["Fecha"].max().date() if not rp.empty else None
+    parcial = ultimo is not None and ultimo < fin
+    resumen = resumen_persona_mes(reg, persona, anio, mes, horas_dia, feriados, ultimo)
+    por_depto = resumen_persona_departamentos(reg, persona, anio, mes, hasta=ultimo)
+    det, sems = semanal_persona_detalle(reg, persona, anio, mes)
+    tabla = tabla_persona_departamentos(det, sems)
+    semanas_con = [x for x in sems if not det.empty and (det["Semana"] == x).any()]
+    sp = semanal_por_persona(reg, anio, mes, {persona: horas_dia}, feriados, hoy)
+    sp = sp[sp["Capacidad (hs)"] > 0].reset_index(drop=True)
+    sp["Estado"] = [estado_carga(r["Ocupación %"], r["Capacidad (hs)"]) for _, r in sp.iterrows()]
+    dd = resumen["detalle_dias"]
+    extras = dd[dd["Extra"] > 0].reset_index(names="Fecha")
+    extras = pd.DataFrame({"Fecha": extras["Fecha"].dt.date, "Trabajo (hs)": extras[C.TIPO_TRABAJO].round(1),
+                           "Capacidad del día (hs)": extras["Capacidad"].round(1), "Extra (hs)": extras["Extra"].round(1)})
+    sin_carga = dias_sin_carga(reg, persona, anio, mes, feriados, hoy)
+
+    h = []
+    if parcial:
+        h.append(f"El mes está en curso: los números llegan hasta el {ultimo:%d/%m}.")
+    if resumen["capacidad"] > 0:
+        h.append(f"Trabajó {_hs(resumen['trabajo'])} hs de {_hs(resumen['capacidad'])} de capacidad "
+                 f"({resumen['utilizacion']:.0f}%) y tuvo {_hs(resumen['disponible'])} hs disponibles "
+                 f"({resumen['disponibilidad']:.0f}%).")
+    if not por_depto.empty:
+        top = por_depto.iloc[0]
+        if len(por_depto) == 1:
+            h.append(f"Todo su trabajo fue en {top['Departamento']} ({_hs(top['Horas'])} hs).")
+        else:
+            h.append(f"El departamento con más horas fue {top['Departamento']}: {_hs(top['Horas'])} hs "
+                     f"({top['% del trabajo']:.0f}% de su trabajo). Trabajó en {len(por_depto)} departamentos.")
+        total_prev = float(por_depto["Mes anterior (hs)"].sum())
+        total_act = float(por_depto["Horas"].sum())
+        if total_prev >= 5:
+            h.append(f"Contra el mismo tramo del mes anterior: {_hs(total_act)} hs contra {_hs(total_prev)} hs "
+                     f"({(total_act - total_prev) / total_prev * 100:+.0f}%).")
+    if len(sp) >= 2:
+        mas = sp.loc[sp["Ocupación %"].idxmax()]
+        margen = sp.loc[sp["Libre (hs)"].idxmax()]
+        h.append(f"Semana más cargada: {mas['Semana']}, al {mas['Ocupación %']:.0f}% de su capacidad. "
+                 f"Semana con más margen: {margen['Semana']}, con {_hs(margen['Libre (hs)'])} hs libres.")
+    if resumen["extra"] > 0 and not extras.empty:
+        fechas = ", ".join(f"{d:%d/%m}" for d in extras["Fecha"].head(4)) + (" y más" if len(extras) > 4 else "")
+        h.append(f"Hubo {_hs(resumen['extra'])} hs extra (días: {fechas}).")
+    if resumen["ausencia"] > 0:
+        h.append(f"Ausencias: {_hs(resumen['ausencia'])} hs (ya descontadas de la capacidad).")
+    if sin_carga:
+        fechas = ", ".join(f"{d:%d/%m}" for d in sin_carga[:4]) + (" y más" if len(sin_carga) > 4 else "")
+        h.append(f"Quedaron {len(sin_carga)} día(s) hábil(es) sin cargar ({fechas}): los números pueden estar subestimados.")
+    return {"persona": persona, "anio": anio, "mes": mes, "ultimo_dia": ultimo, "parcial": parcial, "resumen": resumen,
+            "por_depto": por_depto, "tabla": tabla, "semanas_con": semanas_con, "semanal": sp, "extras": extras,
+            "hallazgos": h}
